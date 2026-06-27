@@ -124,13 +124,16 @@ def main():
 
     history.append(get_current_state())
     history_index = 0
+    view_mode = "global"
 
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
             elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_SPACE:
+                if event.key == pygame.K_l:
+                    view_mode = "robot" if view_mode == "global" else "global"
+                elif event.key == pygame.K_SPACE:
                     paused = not paused
                     if not paused and history_index < len(history) - 1:
                         history = history[:history_index+1]
@@ -261,8 +264,9 @@ def main():
             # Umbral de choque frontal (0.32m)
             if min_dist_frontal < 0.32 and v_target > 0.05:
                 riesgo_inminente = True
-            if min(lidar_scan) < 0.22:
-                riesgo_inminente = True # Peligro de roce en cualquier ángulo
+            # Umbral general reducido a 0.19m (0.17 radio + 0.02 ruido) para evitar falsos positivos por ruido
+            if min(lidar_scan) < 0.19:
+                riesgo_inminente = True # Peligro de roce físico real
                 
             if riesgo_inminente or estado_actual == "EVASION_EMERGENCIA":
                 if estado_actual != "EVASION_EMERGENCIA":
@@ -272,8 +276,8 @@ def main():
                 v_target = 0.0 # Detenemos el robot
                 tiempo_estado += dt
                 
-                # Buscamos escape en TODOS los ángulos
-                esp_escape, ang_escape, intentos, dists, marg = buscar_camino_libre(lidar_points, robot.radius, 'any', 0.15)
+                # Buscamos escape SOLO al frente con un margen muy pequeño (casi el radio exacto)
+                esp_escape, ang_escape, intentos, dists, marg = buscar_camino_libre(lidar_points, robot.radius, 'front', 0.02)
                 intentos_render = intentos
                 render_distancias = dists
                 render_margen = marg
@@ -282,20 +286,12 @@ def main():
                     ang_rel = ang_escape if ang_escape <= 180 else ang_escape - 360
                     w_target = math.radians(ang_rel) * 4.0
                     
-                    if abs(ang_rel) < 15 and dist_frente_estricto > 0.5:
+                    # Si ya estamos alineados y el frente está libre, salimos de emergencia
+                    if abs(ang_rel) < 15 and dist_frente_estricto > 0.4:
                         estado_actual = "EXPLORANDO" 
                 else:
-                    if tiempo_estado > 1.0:
-                        esp_normal, ang_normal, _, _, _ = buscar_camino_libre(lidar_points, robot.radius, 'any', 0.02)
-                        if esp_normal:
-                            ang_rel = ang_normal if ang_normal <= 180 else ang_normal - 360
-                            w_target = math.radians(ang_rel) * 4.0
-                            if abs(ang_rel) < 15:
-                                estado_actual = "EXPLORANDO"
-                        else:
-                            w_target = 3.0 # Forzar giro
-                    else:
-                        w_target = 3.0
+                    # Si no hay salida al frente, rotamos físicamente sobre nuestro eje
+                    w_target = 3.0
 
             # ========================================================
             # 4. ACTUACIÓN FÍSICA Y GUARDADO
@@ -332,64 +328,112 @@ def main():
         # 5. RENDERIZADO VISUAL
         # ========================================================
         screen.fill((30, 30, 30))
-
-        for p1, p2 in world.obstacles:
-            pygame.draw.line(screen, (200, 200, 200), to_screen(*p1), to_screen(*p2), 2)
-
         font = pygame.font.SysFont(None, 24)
-        for sig in world.signals:
-            sx, sy = to_screen(sig['x'], sig['y'])
-            pygame.draw.circle(screen, (255, 255, 0), (sx, sy), 5)
-            img = font.render(sig['type'], True, (255, 255, 0))
-            screen.blit(img, (sx + 10, sy - 10))
-
+        
         rx, ry, rtheta = robot._get_true_pose()
-        rsx, rsy = to_screen(rx, ry)
+        
+        if view_mode == "global":
+            # --- RENDER GLOBAL (Original) ---
+            for p1, p2 in world.obstacles:
+                pygame.draw.line(screen, (200, 200, 200), to_screen(*p1), to_screen(*p2), 2)
 
-        # ----------------------------------------------------
-        # DIBUJAR INTENTOS DEL SWEEP ALGORÍTMICO
-        # ----------------------------------------------------
-        for intento in intentos_render:
-            ang_c = intento['angulo']
-            es_valido = intento['valido']
-            
-            # Rojo = Choque. Cian = Válido.
-            color_circulo = (0, 255, 255) if es_valido else (255, 0, 0)
-            
-            for d_c in render_distancias:
-                cx = rx + d_c * math.cos(rtheta + math.radians(ang_c))
-                cy = ry + d_c * math.sin(rtheta + math.radians(ang_c))
-                scx, scy = to_screen(cx, cy)
-                pygame.draw.circle(screen, color_circulo, (scx, scy), int((render_margen)*SCALE), 1)
-        # ----------------------------------------------------
+            for sig in world.signals:
+                sx, sy = to_screen(sig['x'], sig['y'])
+                pygame.draw.circle(screen, (255, 255, 0), (sx, sy), 5)
+                img = font.render(sig['type'], True, (255, 255, 0))
+                screen.blit(img, (sx + 10, sy - 10))
 
-        angle_increment = (2 * math.pi) / robot.lidar_resolution
-        for i, dist in enumerate(lidar_scan):
-            if dist < robot.lidar_max_range:
-                ray_angle = rtheta + i * angle_increment
-                end_x = rx + dist * math.cos(ray_angle)
-                end_y = ry + dist * math.sin(ray_angle)
-                esx, esy = to_screen(end_x, end_y)
+            rsx, rsy = to_screen(rx, ry)
+
+            # DIBUJAR INTENTOS DEL SWEEP ALGORÍTMICO
+            for intento in intentos_render:
+                ang_c = intento['angulo']
+                es_valido = intento['valido']
+                color_circulo = (0, 255, 255) if es_valido else (255, 0, 0)
                 
-                if dist < 0.7 and (i < 120 or i > 240):
-                    if dist < 0.4:
-                        pygame.draw.circle(screen, (255, 0, 0), (esx, esy), 2)
+                for d_c in render_distancias:
+                    cx = rx + d_c * math.cos(rtheta + math.radians(ang_c))
+                    cy = ry + d_c * math.sin(rtheta + math.radians(ang_c))
+                    scx, scy = to_screen(cx, cy)
+                    pygame.draw.circle(screen, color_circulo, (scx, scy), int((render_margen)*SCALE), 1)
+
+            angle_increment = (2 * math.pi) / robot.lidar_resolution
+            for i, dist in enumerate(lidar_scan):
+                if dist < robot.lidar_max_range:
+                    ray_angle = rtheta + i * angle_increment
+                    end_x = rx + dist * math.cos(ray_angle)
+                    end_y = ry + dist * math.sin(ray_angle)
+                    esx, esy = to_screen(end_x, end_y)
+                    
+                    if dist < 0.7 and (i < 120 or i > 240):
+                        if dist < 0.4:
+                            pygame.draw.circle(screen, (255, 0, 0), (esx, esy), 2)
+                        else:
+                            pygame.draw.circle(screen, (255, 165, 0), (esx, esy), 2)
                     else:
-                        pygame.draw.circle(screen, (255, 165, 0), (esx, esy), 2)
-                else:
-                    pygame.draw.circle(screen, (0, 255, 0), (esx, esy), 1)
+                        pygame.draw.circle(screen, (0, 255, 0), (esx, esy), 1)
 
-        fov_l = rtheta + robot.camera_fov / 2
-        fov_r = rtheta - robot.camera_fov / 2
-        fl_x, fl_y = to_screen(rx + 2 * math.cos(fov_l), ry + 2 * math.sin(fov_l))
-        fr_x, fr_y = to_screen(rx + 2 * math.cos(fov_r), ry + 2 * math.sin(fov_r))
-        pygame.draw.line(screen, (0, 100, 255), (rsx, rsy), (fl_x, fl_y), 1)
-        pygame.draw.line(screen, (0, 100, 255), (rsx, rsy), (fr_x, fr_y), 1)
+            fov_l = rtheta + robot.camera_fov / 2
+            fov_r = rtheta - robot.camera_fov / 2
+            fl_x, fl_y = to_screen(rx + 2 * math.cos(fov_l), ry + 2 * math.sin(fov_l))
+            fr_x, fr_y = to_screen(rx + 2 * math.cos(fov_r), ry + 2 * math.sin(fov_r))
+            pygame.draw.line(screen, (0, 100, 255), (rsx, rsy), (fl_x, fl_y), 1)
+            pygame.draw.line(screen, (0, 100, 255), (rsx, rsy), (fr_x, fr_y), 1)
 
-        robot_px_radius = int(robot.radius * SCALE)
-        pygame.draw.circle(screen, (50, 255, 100), (rsx, rsy), robot_px_radius)
-        hx, hy = to_screen(rx + robot.radius * math.cos(rtheta), ry + robot.radius * math.sin(rtheta))
-        pygame.draw.line(screen, (255, 255, 255), (rsx, rsy), (hx, hy), 3)
+            robot_px_radius = int(robot.radius * SCALE)
+            pygame.draw.circle(screen, (50, 255, 100), (rsx, rsy), robot_px_radius)
+            hx, hy = to_screen(rx + robot.radius * math.cos(rtheta), ry + robot.radius * math.sin(rtheta))
+            pygame.draw.line(screen, (255, 255, 255), (rsx, rsy), (hx, hy), 3)
+
+        else:
+            # --- RENDER VISTA ROBOT (Local) ---
+            rsx, rsy = OFFSET_X, OFFSET_Y
+            
+            # Dibujar LiDAR (centrado, mirando hacia arriba)
+            angle_increment = (2 * math.pi) / robot.lidar_resolution
+            for i, dist in enumerate(lidar_scan):
+                if dist < robot.lidar_max_range:
+                    # En vista local, theta=0 es hacia arriba. (en pygame y crece hacia abajo)
+                    screen_angle = math.pi / 2 - i * angle_increment
+                    esx = int(rsx + dist * math.cos(screen_angle) * SCALE)
+                    esy = int(rsy - dist * math.sin(screen_angle) * SCALE)
+                    
+                    if dist < 0.7 and (i < 120 or i > 240):
+                        if dist < 0.4:
+                            pygame.draw.circle(screen, (255, 0, 0), (esx, esy), 3)
+                        else:
+                            pygame.draw.circle(screen, (255, 165, 0), (esx, esy), 2)
+                    else:
+                        pygame.draw.circle(screen, (0, 255, 0), (esx, esy), 1)
+
+            # Dibujar FOV
+            fov_l = math.pi/2 + robot.camera_fov / 2
+            fov_r = math.pi/2 - robot.camera_fov / 2
+            fl_x = int(rsx + 2 * math.cos(fov_l) * SCALE)
+            fl_y = int(rsy - 2 * math.sin(fov_l) * SCALE)
+            fr_x = int(rsx + 2 * math.cos(fov_r) * SCALE)
+            fr_y = int(rsy - 2 * math.sin(fov_r) * SCALE)
+            pygame.draw.line(screen, (0, 100, 255), (rsx, rsy), (fl_x, fl_y), 1)
+            pygame.draw.line(screen, (0, 100, 255), (rsx, rsy), (fr_x, fr_y), 1)
+
+            # Dibujar Robot
+            robot_px_radius = int(robot.radius * SCALE)
+            pygame.draw.circle(screen, (50, 255, 100), (rsx, rsy), robot_px_radius)
+            hx, hy = rsx, rsy - robot_px_radius # Frente hacia arriba
+            pygame.draw.line(screen, (255, 255, 255), (rsx, rsy), (hx, hy), 3)
+            
+            # Dibujar señales detectadas por YOLO
+            for det in vision_dets:
+                dist = det['distance']
+                rel_a = det['relative_angle']
+                screen_angle = math.pi / 2 - rel_a
+                
+                sx = int(rsx + dist * math.cos(screen_angle) * SCALE)
+                sy = int(rsy - dist * math.sin(screen_angle) * SCALE)
+                
+                pygame.draw.circle(screen, (255, 255, 0), (sx, sy), 8)
+                img = font.render(det['class'], True, (255, 255, 0))
+                screen.blit(img, (sx + 15, sy - 10))
 
         screen.blit(pygame.font.SysFont(None, 36).render(f"Algoritmo: {estado_actual}", True, (255, 255, 255)), (10, 10))
         if cooldown_senal > 0:

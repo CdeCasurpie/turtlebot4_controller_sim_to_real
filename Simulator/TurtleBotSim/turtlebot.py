@@ -20,6 +20,11 @@ class TurtleBotMock:
         self.camera_min_range = 0.1 # Rango mínimo ciego
         self.camera_max_range = 3.0 # Límite físico de detección de YOLO (aumentado)
         self.radius = 0.17 # Radio aproximado del robot (Create 3)
+        
+        # Simulación de imperfecciones de hardware real
+        self.__command_buffer = [(0.0, 0.0)] * 3 # Delay sutil de 3 frames (~50ms)
+        self.v_actual = 0.0
+        self.omega_actual = 0.0
 
     # ==========================================
     # INTERFAZ DE ACTUADORES (Planta Cinemática)
@@ -29,9 +34,19 @@ class TurtleBotMock:
         Integra el modelo diferencial estricto de forma numérica.
         Resuelve colisiones matemáticamente (repulsión) y retorna True si hubo choque.
         """
-        self.__x += v * math.cos(self.__theta) * dt
-        self.__y += v * math.sin(self.__theta) * dt
-        self.__theta += omega * dt
+        import random
+        
+        # Añadir al buffer y extraer el comando retrasado
+        self.__command_buffer.append((v, omega))
+        v_delayed, omega_delayed = self.__command_buffer.pop(0)
+        
+        # Ruido de actuadores (Gaussiana suave)
+        self.v_actual = v_delayed + random.gauss(0, 0.02) if v_delayed != 0 else 0.0
+        self.omega_actual = omega_delayed + random.gauss(0, 0.05) if omega_delayed != 0 else 0.0
+        
+        self.__x += self.v_actual * math.cos(self.__theta) * dt
+        self.__y += self.v_actual * math.sin(self.__theta) * dt
+        self.__theta += self.omega_actual * dt
         self.__theta = normalize_angle(self.__theta)
         
         chocado = False
@@ -66,10 +81,15 @@ class TurtleBotMock:
         """
         scan = np.zeros(self.lidar_resolution)
         angle_increment = (2 * math.pi) / self.lidar_resolution
+        import random
         
         for i in range(self.lidar_resolution):
             ray_angle = self.__theta + i * angle_increment
-            scan[i] = cast_ray((self.__x, self.__y), ray_angle, self._world.obstacles, self.lidar_max_range)
+            dist = cast_ray((self.__x, self.__y), ray_angle, self._world.obstacles, self.lidar_max_range)
+            # Añadir ruido Gaussiano al LiDAR (~1.5cm de desviación típica)
+            if dist < self.lidar_max_range:
+                dist += random.gauss(0, 0.015)
+            scan[i] = max(0.0, dist)
             
         return scan
 
