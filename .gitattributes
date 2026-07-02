@@ -1,0 +1,7 @@
+# Los archivos que corren en el robot (Linux) deben mantener finales de línea LF,
+# incluso si el repo se clona en Windows con core.autocrlf=true.
+deploy/** text eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+yolonano/best.pt binary
+yolonano/best/** binary

@@ -1,0 +1,26 @@
+# Servicio systemd OPCIONAL: arranca la navegación autónoma al encender el robot.
+# Instalación (en el robot):
+#   sudo cp ~/turtlebot4_controller/deploy/turtlebot4-autonomous.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable turtlebot4-autonomous   # solo si quieres autoarranque al boot
+#   sudo systemctl start turtlebot4-autonomous    # arranque manual
+#   sudo systemctl stop turtlebot4-autonomous     # DETENER EL ROBOT
+# Logs: journalctl -u turtlebot4-autonomous -f
+#
+# OJO: este servicio asume que el bringup del TurtleBot4 ya corre (el servicio
+# turtlebot4 estándar del robot). Espera 20 s tras el boot para darle tiempo.
+
+[Unit]
+Description=TurtleBot4 controlador autonomo de competencia
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+ExecStartPre=/bin/sleep 20
+ExecStart=/bin/bash /home/ubuntu/turtlebot4_controller/deploy/run_competition.sh --now
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

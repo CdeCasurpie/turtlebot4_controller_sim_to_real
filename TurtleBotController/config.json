@@ -13,8 +13,18 @@
         "lidar_max_range": 12.0
     },
     "vision": {
+        "backend": "auto",
         "yolo_model_path": "../yolonano/best.pt",
         "confidence_threshold": 0.85,
-        "camera_fov_deg": 60.0
+        "camera_fov_deg": 60.0,
+        "async_vision": true,
+        "detection_max_age": 1.0,
+        "vpu": {
+            "blob_path": "../yolonano/vpu/best.blob",
+            "config_path": "../yolonano/vpu/best.json",
+            "fps": 15.0,
+            "camera_fov_deg": 42.0,
+            "distance_scale": 1.0
+        }
     }
 }
