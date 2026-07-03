@@ -12,10 +12,18 @@
         "lidar_resolution": 360,
         "lidar_max_range": 12.0
     },
+    "controller": {
+        "v_max": 0.30,
+        "w_max": 1.8
+    },
     "vision": {
         "backend": "auto",
         "yolo_model_path": "../yolonano/best.pt",
-        "confidence_threshold": 0.85,
+        "confidence_threshold": 0.5,
+        "min_consecutive_detections": 2,
+        "imgsz": 320,
+        "vision_period": 0.2,
+        "scan_max_age": 0.5,
         "camera_fov_deg": 60.0,
         "async_vision": true,
         "detection_max_age": 1.0,

@@ -4,7 +4,9 @@
 Genera yolonano/best_ncnn_model/, que TurtleBotController/turtlebot.py detecta
 y prefiere automáticamente sobre el .pt.
 
-Uso: python3 deploy/export_ncnn.py [imgsz]   (imgsz default: 640, igual al entrenamiento)
+Uso: python3 deploy/export_ncnn.py [imgsz]
+imgsz default: 320 — best.pt fue entrenado a 320 (auditoría 2026-07); exportar a 640
+no mejora la precisión y es 3-4x más lento en el Pi.
 """
 import os
 import sys
@@ -12,7 +14,7 @@ import sys
 from ultralytics import YOLO
 
 def main():
-    imgsz = int(sys.argv[1]) if len(sys.argv) > 1 else 640
+    imgsz = int(sys.argv[1]) if len(sys.argv) > 1 else 320
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     pt_path = os.path.join(base, "yolonano", "best.pt")
     if not os.path.exists(pt_path):

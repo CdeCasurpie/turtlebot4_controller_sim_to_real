@@ -1,4 +1,12 @@
 import os
+
+# Límite de hilos de inferencia ANTES de importar numpy/cv2/ultralytics:
+# la Pi 4 tiene 4 núcleos y también corre los drivers del lidar/cámara y el
+# bucle de control. Si OpenMP (NCNN/torch) toma los 4, el sistema entero se
+# estrangula (load >10, throttling térmico, el driver del lidar pierde el
+# serial y detiene el motor).
+os.environ.setdefault("OMP_NUM_THREADS", "2")
+
 import json
 import math
 import time
@@ -6,15 +14,20 @@ import threading
 import numpy as np
 import cv2
 
+cv2.setNumThreads(2)
+
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from geometry_msgs.msg import Twist, TwistStamped
 from sensor_msgs.msg import LaserScan, Image
+from nav_msgs.msg import Odometry
 from cv_bridge import CvBridge
 
 try:
     from ultralytics import YOLO
+    import torch
+    torch.set_num_threads(2)
 except ImportError:
     YOLO = None
 
@@ -45,16 +58,34 @@ class _TurtleBotRosNode(Node):
         self.bridge = CvBridge()
         self.scan_sub = self.create_subscription(LaserScan, self.scan_topic, self._scan_callback, 10)
         self.image_sub = self.create_subscription(Image, self.image_topic, self._image_callback, 10)
-        
+        # /odom del Create 3: BEST_EFFORT matchea tanto publishers RELIABLE
+        # como BEST_EFFORT (la compatibilidad QoS exige pub >= sub).
+        self.odom_sub = self.create_subscription(Odometry, '/odom', self._odom_callback, qos)
+
         self.latest_scan = None
+        self.latest_scan_time = 0.0
         self.latest_image = None
-        
+        self.latest_image_time = 0.0
+        self.latest_odom = None      # (x, y, yaw)
+        self.latest_odom_time = 0.0
+
     def _scan_callback(self, msg):
         self.latest_scan = msg
-        
+        self.latest_scan_time = time.time()
+
+    def _odom_callback(self, msg):
+        p = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        # yaw desde el cuaternión (el Create 3 se mueve en el plano)
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self.latest_odom = (p.x, p.y, yaw)
+        self.latest_odom_time = time.time()
+
     def _image_callback(self, msg):
         try:
             self.latest_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+            self.latest_image_time = time.time()
         except Exception as e:
             self.get_logger().error(f"Error converting image: {e}")
 
@@ -135,10 +166,20 @@ class TurtleBotReal:
         # degrada. Un hilo aparte infiere continuamente y cachea las detecciones.
         self.async_vision = self.config['vision'].get('async_vision', True)
         self.detection_max_age = self.config['vision'].get('detection_max_age', 1.0)
+        # Ritmo del hilo de visión: para señales de tránsito bastan ~5 Hz.
+        # Sin pausa entre inferencias el hilo satura la CPU de la Pi.
+        self.vision_period = self.config['vision'].get('vision_period', 0.2)
+        # Confirmación temporal: exigir la misma clase en N inferencias seguidas
+        # protege contra falsos positivos al bajar confidence_threshold.
+        self.min_consecutive = self.config['vision'].get('min_consecutive_detections', 2)
+        self.yolo_imgsz = self.config['vision'].get('imgsz', 320)
+        # Frescura de sensores: datos más viejos que esto se consideran caídos.
+        self.scan_max_age = self.config['vision'].get('scan_max_age', 0.5)
         self._vision_lock = threading.Lock()
         self._cached_detections = []
         self._cached_detections_time = 0.0
-        self._vision_time_logged = False
+        self._consec_counts = {}
+        self._vision_frames = 0
         if self.yolo_model is not None and self.async_vision:
             self._vision_thread = threading.Thread(target=self._vision_loop, daemon=True)
             self._vision_thread.start()
@@ -183,18 +224,38 @@ class TurtleBotReal:
     def _vision_loop(self):
         while True:
             frame = self.node.latest_image
-            if frame is None:
+            # Imagen ausente o congelada (cámara caída): no inferir ni confirmar.
+            if frame is None or (time.time() - self.node.latest_image_time) > 1.0:
+                self._consec_counts = {}
+                with self._vision_lock:
+                    self._cached_detections = []
                 time.sleep(0.05)
                 continue
             t0 = time.time()
             detections = self._run_yolo(frame)
             elapsed = time.time() - t0
-            if not self._vision_time_logged:
-                self._vision_time_logged = True
+            self._vision_frames += 1
+            # Se loguea el 2do frame: el 1ro incluye el warmup del modelo y
+            # reporta un tiempo ~5-10x mayor que el real.
+            if self._vision_frames == 2:
                 print(f"\n[VISION] Inferencia YOLO: {elapsed*1000:.0f} ms/frame (~{1.0/max(elapsed, 1e-6):.1f} Hz)")
+
+            # Confirmación temporal por clase
+            presentes = {d['class'] for d in detections}
+            for clase in list(self._consec_counts):
+                if clase not in presentes:
+                    self._consec_counts[clase] = 0
+            for clase in presentes:
+                self._consec_counts[clase] = self._consec_counts.get(clase, 0) + 1
+            confirmadas = [d for d in detections
+                           if self._consec_counts[d['class']] >= self.min_consecutive]
+
             with self._vision_lock:
-                self._cached_detections = detections
+                self._cached_detections = confirmadas
                 self._cached_detections_time = time.time()
+
+            # Ceder CPU: el control y los drivers necesitan núcleos libres.
+            time.sleep(max(0.0, self.vision_period - elapsed))
         
     def move(self, v: float, omega: float, dt: float) -> bool:
         """
@@ -224,13 +285,17 @@ class TurtleBotReal:
         
     def get_lidar_scan(self) -> list:
         """
-        Retorna una lista/array de distancias, homogeneizado a `lidar_resolution`.
+        Retorna una LISTA de distancias homogeneizada a `lidar_resolution`.
+
+        Si el lidar no ha publicado nunca, o su último mensaje es más viejo que
+        `scan_max_age` (sensor caído), retorna [] — el llamador debe FRENAR.
+        Nunca se inventan lecturas "libres": un array relleno de max_range haría
+        que el robot avance ciego a velocidad máxima.
         """
-        scan = np.zeros(self.lidar_resolution)
-        scan.fill(self.lidar_max_range)
-        
+        scan = []
+
         msg = self.node.latest_scan
-        if msg is not None:
+        if msg is not None and (time.time() - self.node.latest_scan_time) <= self.scan_max_age:
             ranges = np.array(msg.ranges)
             # Limpiar Infs o NaNs generados por el sensor real
             ranges = np.nan_to_num(ranges, posinf=self.lidar_max_range, neginf=0.0)
@@ -250,6 +315,20 @@ class TurtleBotReal:
                 scan = scan[90:] + scan[:90]
                 
         return scan
+
+    def get_odometry(self):
+        """
+        Retorna (x, y, yaw) de /odom, o None si aún no llegó ningún mensaje
+        (o el último tiene más de 1 s — odometría caída).
+
+        El controlador solo usa DIFERENCIAS de pose/yaw (giros cerrados y
+        distancia recorrida), así que el drift lento del odom no le afecta.
+        """
+        if self.node.latest_odom is None:
+            return None
+        if (time.time() - self.node.latest_odom_time) > 1.0:
+            return None
+        return self.node.latest_odom
 
     def get_vision_detections(self):
         """
@@ -280,7 +359,9 @@ class TurtleBotReal:
     def _run_yolo(self, frame):
         detections = []
         h, w = frame.shape[:2]
-        results = self.yolo_model(frame, verbose=False, conf=self.conf_threshold)
+        # imgsz debe coincidir con el del entrenamiento (320). Sin él, ultralytics
+        # infiere a 640 por defecto: 4x el cómputo para el mismo modelo.
+        results = self.yolo_model(frame, verbose=False, conf=self.conf_threshold, imgsz=self.yolo_imgsz)
 
         if len(results) > 0:
             boxes = results[0].boxes

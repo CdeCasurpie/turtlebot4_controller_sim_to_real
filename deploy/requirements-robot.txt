@@ -2,6 +2,8 @@
 # rclpy, sensor_msgs, geometry_msgs y cv_bridge NO van aquí: vienen del ROS 2 del robot.
 #
 # numpy<2: cv_bridge del sistema está compilado contra numpy 1.x; numpy 2 rompe su ABI.
+# OJO: torch NO va aquí — install_on_robot.sh lo instala antes desde el índice CPU de
+# PyTorch (el build CUDA que PyPI resuelve por defecto crashea en la Raspberry Pi 4).
 numpy<2
 ultralytics
 opencv-python-headless

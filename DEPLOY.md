@@ -318,6 +318,40 @@ Es cuánto tarda cada análisis de imagen:
   detecta las señales con más retraso. Si quieres arreglarlo: Parte G.
 - ¿Quieres aún más velocidad de visión? Mira la [Parte F (VPU)](#parte-f--opcional-correr-yolo-dentro-de-la-cámara-vpu).
 
+### Modo carrera: 0.46 m/s con `safety_override=full`
+
+La base Create 3 limita la velocidad a **0.306 m/s** por defecto ("safe mode").
+Las reglas de la competencia permiten desactivarlo, lo que sube el tope físico a
+**0.46 m/s** (+50%). Son dos pasos:
+
+**1. Desactivar el límite en la base** (cada vez que se enciende el robot, después
+del bringup):
+
+```bash
+ros2 param set /motion_control safety_override full
+# debe responder: Set parameter successful
+ros2 param get /motion_control safety_override   # verificar: full
+```
+
+**2. Subir el tope del controlador** en `TurtleBotController/config.json`:
+
+```json
+"controller": {
+    "v_max": 0.46,
+    "w_max": 1.8
+}
+```
+
+Consejos:
+- Prueba PRIMERO todo el circuito a 0.30 (config por defecto). Cambia a 0.46 solo
+  cuando el robot complete el recorrido de forma consistente.
+- El controlador ya escala el frenado con la velocidad (frena según el "claro"
+  que ve por delante), pero a 0.46 la distancia de reacción real crece: si ves
+  frenadas de emergencia frecuentes en las curvas, vuelve a 0.30 para la
+  clasificación y usa 0.46 solo si necesitas el tiempo.
+- `safety_override=full` también desactiva la protección de acantilados
+  (escaleras). En un circuito plano no importa.
+
 ### Si el WiFi del lab es inestable: usa tmux
 
 Si se corta tu SSH mientras el programa corre, el programa **muere** (y el robot se
@@ -440,6 +474,7 @@ STOP a 1.6 m**, hay que calibrar:
 | El robot esquiva hacia el lado equivocado | La orientación del lidar no coincide con la calibración (rotación de 90°) | Corre `python3 test_controller.py`, acerca la mano por el frente/izquierda y mira qué índice baja; ajusta la línea `scan = scan[90:] + scan[:90]` en `TurtleBotController/turtlebot.py` |
 | Nunca detecta señales | YOLO no cargó, o la cámara no publica | En el log de arranque debe aparecer `[VISION] YOLO cargado exitosamente` y luego `[VISION] Inferencia YOLO: ...`. Si no: revisa cámara (arriba) y que `yolonano/best.pt` exista en el robot |
 | `[VISION] Inferencia YOLO: ~1000 ms` (lento) | El export NCNN falló durante la instalación | En el robot: `source ~/tb4_controller_venv/bin/activate && python3 deploy/export_ncnn.py` y relanza |
+| `Illegal instruction (core dumped)` al usar YOLO o exportar | pip instaló el torch para servidores ARM con GPU NVIDIA (versión `+cu130`), que usa instrucciones que el procesador del Pi no tiene | En el robot, dentro del venv: `pip uninstall -y torch torchvision triton` y luego `pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu`. El instalador ya lo hace solo desde la versión actual |
 | `pip install` falla durante la instalación | La red del lab no tiene internet | Comparte internet desde tu celular (hotspot) al robot solo durante la instalación |
 | VPU: error `X_LINK_DEVICE_ALREADY_IN_USE` | El nodo `oakd` de ROS todavía tiene la cámara | `sudo systemctl stop oakd` y reintenta |
 | VPU: `X_LINK_DEVICE_NOT_FOUND` o error de permisos | Cable USB de la cámara o permisos del sistema | Reconecta el USB de la OAK-D. Si persiste: `echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="03e7", MODE="0666"' \| sudo tee /etc/udev/rules.d/80-movidius.rules && sudo udevadm control --reload-rules && sudo udevadm trigger` |

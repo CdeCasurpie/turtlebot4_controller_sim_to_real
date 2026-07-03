@@ -24,6 +24,19 @@ source "$VENV_DIR/bin/activate"
 pip install --upgrade pip
 
 echo "=== [3/4] Dependencias Python (torch para ARM puede tardar varios minutos) ==="
+# torch DEBE ser la versión CPU del índice de PyTorch. Si se deja que pip lo resuelva
+# desde PyPI, instala el build CUDA para servidores ARM (torch+cu130), que descarga
+# ~2.5 GB de paquetes NVIDIA inútiles y crashea con "Illegal instruction" en el
+# Cortex-A72 de la Raspberry Pi 4.
+if pip show torch 2>/dev/null | grep -q "Version: .*+cu"; then
+    echo "Detectado torch CUDA (incompatible con el Pi). Quitándolo..."
+    pip uninstall -y torch torchvision triton cuda-toolkit cuda-bindings cuda-pathfinder \
+        nvidia-cublas nvidia-cuda-cupti nvidia-cuda-nvrtc nvidia-cuda-runtime \
+        nvidia-cudnn-cu13 nvidia-cufft nvidia-cufile nvidia-curand nvidia-cusolver \
+        nvidia-cusparse nvidia-cusparselt-cu13 nvidia-nccl-cu13 nvidia-nvjitlink \
+        nvidia-nvshmem-cu13 nvidia-nvtx || true
+fi
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 pip install -r "$APP_DIR/deploy/requirements-robot.txt"
 
 echo "=== [4/4] Export del modelo YOLO a NCNN (opcional, acelera la inferencia en el Pi) ==="

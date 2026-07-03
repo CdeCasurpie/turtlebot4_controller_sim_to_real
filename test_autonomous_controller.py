@@ -146,7 +146,10 @@ def main():
                         history_index += 1
                         set_state(history[history_index])
 
-        lidar_scan = robot.get_lidar_scan()
+        # .tolist() es CRÍTICO: con ndarray, `scan[0:15] + scan[345:360]` SUMA
+        # elemento a elemento (distancia frontal ~2x la real); con lista concatena,
+        # que es lo que hace el robot real. Sin esto, el sim valida otra matemática.
+        lidar_scan = robot.get_lidar_scan().tolist()
         vision_dets = robot.get_vision_detections()
         
         # Pre-computar puntos x,y del lidar para que la función sea ultra rápida
