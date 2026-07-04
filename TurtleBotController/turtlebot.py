@@ -4,30 +4,24 @@ import math
 import time
 import threading
 import numpy as np
-import cv2
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from geometry_msgs.msg import Twist, TwistStamped
-from sensor_msgs.msg import LaserScan, Image
-from cv_bridge import CvBridge
+from sensor_msgs.msg import LaserScan
 
-try:
-    from ultralytics import YOLO
-except ImportError:
-    YOLO = None
+from .vpu_vision import VpuYoloDetector
 
 class _TurtleBotRosNode(Node):
     def __init__(self, config):
         super().__init__('turtlebot_controller_node')
         self.config = config
-        
+
         self.cmd_topic = config['ros'].get('cmd_vel_topic', '/cmd_vel')
         self.scan_topic = config['ros'].get('scan_topic', '/scan')
-        self.image_topic = config['ros'].get('image_topic', '/oakd/rgb/preview/image_raw')
         self.use_twist_stamped = config['ros'].get('use_twist_stamped', True)
-        
+
         # QoS Profile BEST_EFFORT para coincidir con la base del Create 3
         qos = QoSProfile(
             depth=10,
@@ -40,23 +34,17 @@ class _TurtleBotRosNode(Node):
             self.cmd_pub = self.create_publisher(TwistStamped, self.cmd_topic, qos)
         else:
             self.cmd_pub = self.create_publisher(Twist, self.cmd_topic, qos)
-            
+
         # Subscribers (Default QoS, igual que tu enviador.py)
-        self.bridge = CvBridge()
+        # Nota: ya no hay suscripción de imagen por ROS. La visión corre directo
+        # sobre la VPU de la OAK-D vía DepthAI (ver VpuYoloDetector), sin pasar
+        # por un tópico de imagen ni por la CPU de la Raspberry Pi.
         self.scan_sub = self.create_subscription(LaserScan, self.scan_topic, self._scan_callback, 10)
-        self.image_sub = self.create_subscription(Image, self.image_topic, self._image_callback, 10)
-        
+
         self.latest_scan = None
-        self.latest_image = None
-        
+
     def _scan_callback(self, msg):
         self.latest_scan = msg
-        
-    def _image_callback(self, msg):
-        try:
-            self.latest_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-        except Exception as e:
-            self.get_logger().error(f"Error converting image: {e}")
 
 
 class TurtleBotReal:
@@ -84,19 +72,26 @@ class TurtleBotReal:
         domain_id = str(self.config['ros'].get('domain_id', 77))
         os.environ["ROS_DOMAIN_ID"] = domain_id
         
-        # Iniciar YOLO
-        model_path = os.path.join(base_dir, self.config['vision'].get('yolo_model_path', '../yolonano/best.pt'))
-        self.conf_threshold = self.config['vision'].get('confidence_threshold', 0.85)
-        self.yolo_model = None
-        if YOLO is not None and os.path.exists(model_path):
-            try:
-                self.yolo_model = YOLO(model_path)
-                print(f"[VISION] YOLO cargado exitosamente: {model_path}")
-            except Exception as e:
-                print(f"[VISION] Error al cargar YOLO: {e}")
-        else:
-            print("[VISION] Advertencia: YOLO no disponible o modelo no encontrado.")
-            
+        # Iniciar YOLO en la VPU (Myriad X) de la OAK-D vía DepthAI
+        vision_cfg = self.config['vision']
+        self.conf_threshold = vision_cfg.get('confidence_threshold', 0.85)
+        blob_path = os.path.join(base_dir, vision_cfg.get('vpu_blob_path', '../vpu_deployment/models/turtlebot_signals_v2.blob'))
+        classes_path = os.path.join(base_dir, vision_cfg.get('classes_path', '../yolonanov2/classes.txt'))
+        self.vpu_detector = None
+        try:
+            self.vpu_detector = VpuYoloDetector(
+                blob_path=blob_path,
+                classes_path=classes_path,
+                num_classes=vision_cfg.get('num_classes', 4),
+                confidence_threshold=self.conf_threshold,
+                iou_threshold=vision_cfg.get('iou_threshold', 0.5),
+                fps=vision_cfg.get('fps', 15),
+                camera_fov_rad=self.camera_fov,
+            )
+            print(f"[VISION-VPU] Pipeline DepthAI iniciado: {blob_path}")
+        except Exception as e:
+            print(f"[VISION-VPU] Error al iniciar la VPU: {e}")
+
         # Iniciar ROS 2 en un hilo separado
         print(f"[TurtleBotController] Iniciando ROS 2 en el DOMAIN_ID: {domain_id}")
         if not rclpy.ok():
@@ -171,44 +166,12 @@ class TurtleBotReal:
 
     def get_vision_detections(self):
         """
-        Pasa la última imagen por el modelo YOLO y retorna una lista en formato:
+        Retorna las últimas detecciones resueltas por la VPU de la OAK-D, en formato:
         [{'class': 'left', 'distance': 1.5, 'relative_angle': 0.1}, ...]
         """
-        detections = []
-        frame = self.node.latest_image
-        
-        if frame is not None and self.yolo_model is not None:
-            h, w = frame.shape[:2]
-            results = self.yolo_model(frame, verbose=False, conf=self.conf_threshold)
-            
-            if len(results) > 0:
-                boxes = results[0].boxes
-                for box in boxes:
-                    cls_id = int(box.cls[0])
-                    class_name = self.yolo_model.names[cls_id]
-                    
-                    x1, y1, x2, y2 = box.xyxy[0].tolist()
-                    cx = (x1 + x2) / 2.0
-                    
-                    # Calcular ángulo relativo
-                    # Pixeles mapeados desde -1 (izq) a 1 (der)
-                    normalized_x = (cx - (w / 2.0)) / (w / 2.0)
-                    relative_angle = -normalized_x * (self.camera_fov / 2.0)
-                    
-                    # Estimar distancia asumiendo un tamaño de señal estándar (aprox 20 cm)
-                    # Formula empírica de Pinhole Camera:
-                    bbox_width = max(x2 - x1, 1.0)
-                    focal_length = w  # Asumimos que el FOV es aproximadamente de 1 radian para este cálculo simple
-                    real_width = 0.20 # 20cm
-                    distance = (real_width * focal_length) / bbox_width
-                    
-                    detections.append({
-                        'class': class_name,
-                        'distance': distance,
-                        'relative_angle': relative_angle
-                    })
-                    
-        return detections
+        if self.vpu_detector is None:
+            return []
+        return self.vpu_detector.get_detections()
 
     def stop(self):
         """Detiene el robot completamente."""

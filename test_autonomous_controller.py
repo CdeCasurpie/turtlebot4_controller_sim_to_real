@@ -184,6 +184,8 @@ def main():
                     elif clase == 'stop' and dist <= 1.6:
                         estado_actual = "DETENIDO"
                         tiempo_estado = 3.0
+                    elif clase == 'finish' and dist <= 1.6:
+                        estado_actual = "FINALIZADO"
 
             # ========================================================
             # 2. LÓGICA DE CADA ESTADO
@@ -251,6 +253,11 @@ def main():
                 if tiempo_estado <= 0:
                     estado_actual = "EXPLORANDO"
                     cooldown_senal = 3.0
+
+            elif estado_actual == "FINALIZADO":
+                # Meta alcanzada: se queda detenido, sin volver a EXPLORANDO.
+                v_target = 0.0
+                w_target = 0.0
 
             # ========================================================
             # 3. ANTI-CHOQUES Y EVASIÓN (Giro estático hasta ruta libre)
