@@ -187,8 +187,17 @@ def main():
         c_w_turn = sim_config.get("w_target_turn", 1.5)
         c_w_appr = sim_config.get("w_target_approach", 2.5)
         c_evas_f = sim_config.get("evasion_frontal_dist", 0.35)
-        c_evas_g = sim_config.get("evasion_general_dist", 0.20)
+        c_evas_g = sim_config.get("evasion_general_dist", 0.18)
         c_min_frames = sim_config.get("min_consecutive_frames", 4)
+        c_cool_post = sim_config.get("cooldown_post_giro", 1.5)
+        c_cool_stop = sim_config.get("cooldown_stop", 3.0)
+        c_time_stop = sim_config.get("tiempo_espera_stop", 3.0)
+        c_rad_amarillo = sim_config.get("radio_amarillo_suave", 0.7)
+        c_rad_giro_f = sim_config.get("radio_giro_fuerte", 0.4)
+        c_fac_rep_s = sim_config.get("factor_repulsion_suave", 1.0)
+        c_fac_rep_f = sim_config.get("factor_repulsion_fuerte", 1.5)
+        c_time_min_g = sim_config.get("tiempo_min_giro", 0.8)
+        c_time_max_g = sim_config.get("tiempo_max_giro", 2.0)
 
         if not use_simulator:
             current_time = time.time()
@@ -287,7 +296,7 @@ def main():
                             estado_actual = "ACERCANDOSE_A_SENAL"
                     elif clase == 'stop' and dist <= c_stop_dist:
                         estado_actual = "DETENIDO"
-                        tiempo_estado = 3.0
+                        tiempo_estado = c_time_stop
                     elif clase == 'finish' and dist <= c_stop_dist:
                         estado_actual = "FINALIZADO"
 
@@ -301,9 +310,9 @@ def main():
                 min_angle = np.argmin(lidar_scan)
                 if min_angle > 180: min_angle -= 360
 
-                if min_dist < 0.7:
-                    factor_giro = 1.5 if min_dist < 0.4 else 1.0
-                    margen = 0.7
+                if min_dist < c_rad_amarillo:
+                    factor_giro = c_fac_rep_f if min_dist < c_rad_giro_f else c_fac_rep_s
+                    margen = c_rad_amarillo
                     if min_angle >= 0:
                         target = 90 + (margen - min_dist) * 80.0 
                         w_target -= math.radians(target - min_angle) * factor_giro
@@ -361,14 +370,14 @@ def main():
                 render_distancias = dists
                 render_margen = marg
                 
-                # A 1.5 rad/s, 90 grados toman ~1.05 segundos.
-                if tiempo_estado >= 0.8 and espacio_frente: 
+                # A c_w_turn rad/s, 90 grados toman cierto tiempo.
+                if tiempo_estado >= c_time_min_g and espacio_frente: 
                     estado_actual = "EXPLORANDO"
-                    cooldown_senal = 1.5
+                    cooldown_senal = c_cool_post
                 # Evitar girar infinitamente
-                elif tiempo_estado >= 2.0:
+                elif tiempo_estado >= c_time_max_g:
                     estado_actual = "EXPLORANDO"
-                    cooldown_senal = 1.5
+                    cooldown_senal = c_cool_post
 
             elif estado_actual == "DETENIDO":
                 v_target = 0.0
@@ -376,7 +385,7 @@ def main():
                 tiempo_estado -= dt
                 if tiempo_estado <= 0:
                     estado_actual = "EXPLORANDO"
-                    cooldown_senal = 3.0
+                    cooldown_senal = c_cool_stop
 
             elif estado_actual == "FINALIZADO":
                 # Meta alcanzada: se queda detenido, sin volver a EXPLORANDO.
