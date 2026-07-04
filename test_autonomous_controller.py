@@ -1,5 +1,6 @@
 import pygame
 import sys
+import json
 import math
 import os
 import numpy as np
@@ -153,8 +154,40 @@ def main():
     history_index = 0
     view_mode = "global" if use_simulator else "robot"
     last_time = time.time()
+    
+    sim_config_path = "sim_config.json"
+    sim_config = {}
+    config_frames = 0
+    
+    def load_config():
+        nonlocal sim_config
+        try:
+            with open(sim_config_path, "r") as f:
+                sim_config = json.load(f)
+            if use_simulator and hasattr(robot, 'update_config'):
+                robot.update_config(sim_config)
+        except Exception:
+            pass
+            
+    load_config()
 
     while running:
+        if use_simulator:
+            config_frames += 1
+            if config_frames >= 30:
+                config_frames = 0
+                load_config()
+                
+        c_vision_dist = sim_config.get("vision_reliable_dist", 0.45)
+        c_stop_dist = sim_config.get("stop_finish_dist", 1.6)
+        c_max_v = sim_config.get("max_v_target_sim", 0.8)
+        c_min_v = sim_config.get("min_v_target_sim", 0.1)
+        c_v_turn = sim_config.get("v_target_turn", 0.3)
+        c_w_turn = sim_config.get("w_target_turn", 1.5)
+        c_w_appr = sim_config.get("w_target_approach", 2.5)
+        c_evas_f = sim_config.get("evasion_frontal_dist", 0.35)
+        c_evas_g = sim_config.get("evasion_general_dist", 0.20)
+
         if not use_simulator:
             current_time = time.time()
             dt = current_time - last_time
@@ -234,26 +267,26 @@ def main():
                 
                 if estado_actual in ["EXPLORANDO", "ACERCANDOSE_A_SENAL"]:
                     if clase == 'left':
-                        if dist <= 0.45:
+                        if dist <= c_vision_dist:
                             estado_actual = "BUSCANDO_IZQ"
                         else:
                             estado_actual = "ACERCANDOSE_A_SENAL"
                     elif clase == 'right':
-                        if dist <= 0.45:
+                        if dist <= c_vision_dist:
                             estado_actual = "BUSCANDO_DER"
                         else:
                             estado_actual = "ACERCANDOSE_A_SENAL"
-                    elif clase == 'stop' and dist <= 1.6:
+                    elif clase == 'stop' and dist <= c_stop_dist:
                         estado_actual = "DETENIDO"
                         tiempo_estado = 3.0
-                    elif clase == 'finish' and dist <= 1.6:
+                    elif clase == 'finish' and dist <= c_stop_dist:
                         estado_actual = "FINALIZADO"
 
             # ========================================================
             # 2. LÓGICA DE CADA ESTADO
             # ========================================================
             if estado_actual == "EXPLORANDO":
-                v_target = max(0.1, min(0.8, (dist_frente_estricto - 0.4) * 0.8))
+                v_target = max(c_min_v, min(c_max_v, (dist_frente_estricto - 0.4) * c_max_v))
                 
                 min_dist = min(lidar_scan)
                 min_angle = np.argmin(lidar_scan)
@@ -271,19 +304,19 @@ def main():
 
             elif estado_actual == "ACERCANDOSE_A_SENAL":
                 # Misma velocidad que explorando
-                v_target = max(0.1, min(0.8, (dist_frente_estricto - 0.4) * 0.8))
+                v_target = max(c_min_v, min(c_max_v, (dist_frente_estricto - 0.4) * c_max_v))
                 
                 # Centrar la flecha para acercarse a ella sin esquivar paredes lateralmente
                 if tracker['frames_lost'] < tracker['max_frames']:
-                    w_target = tracker['relative_angle'] * 2.5
+                    w_target = tracker['relative_angle'] * c_w_appr
                     
             elif estado_actual in ["BUSCANDO_IZQ", "BUSCANDO_DER"]:
                 # Misma velocidad que explorando, la velocidad varía solo si nos vamos a estrellar
-                v_target = max(0.1, min(0.8, (dist_frente_estricto - 0.4) * 0.8))
+                v_target = max(c_min_v, min(c_max_v, (dist_frente_estricto - 0.4) * c_max_v))
                 
                 # Centrar la flecha usando el tracker (sobrevive si se pierde por unos frames)
                 if tracker['frames_lost'] < tracker['max_frames']:
-                    w_target = tracker['relative_angle'] * 2.5
+                    w_target = tracker['relative_angle'] * c_w_appr
                 
                 dir_search = 'left' if estado_actual == "BUSCANDO_IZQ" else 'right'
                 
@@ -304,8 +337,8 @@ def main():
 
             elif estado_actual in ["GIRANDO_IZQ", "GIRANDO_DER"]:
                 # Avanzamos y giramos más rápido para no chocar con la pared frontal
-                v_target = 0.3 
-                w_target = 1.5 if estado_actual == "GIRANDO_IZQ" else -1.5
+                v_target = c_v_turn 
+                w_target = c_w_turn if estado_actual == "GIRANDO_IZQ" else -c_w_turn
                 tiempo_estado += dt
                 
                 # Verificamos visualmente el frente (para debug en UI)
@@ -350,11 +383,11 @@ def main():
                 if lidar_scan[i] < min_dist_frontal:
                     min_dist_frontal = lidar_scan[i]
             
-            # Umbral de choque frontal (0.32m)
-            if min_dist_frontal < 0.32 and v_target > 0.05:
+            # Umbral de choque frontal (0.32m por defecto o de config)
+            if min_dist_frontal < c_evas_f and v_target > 0.05:
                 riesgo_inminente = True
             # Umbral general reducido a 0.19m (0.17 radio + 0.02 ruido) para evitar falsos positivos por ruido
-            if min(lidar_scan) < 0.19:
+            if min(lidar_scan) < c_evas_g:
                 riesgo_inminente = True # Peligro de roce físico real
                 
             if riesgo_inminente or estado_actual == "EVASION_EMERGENCIA":

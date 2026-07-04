@@ -25,6 +25,15 @@ class TurtleBotMock:
         self.__command_buffer = [(0.0, 0.0)] * 3 # Delay sutil de 3 frames (~50ms)
         self.v_actual = 0.0
         self.omega_actual = 0.0
+        
+        self.sim_config = {
+            "vision_reliable_dist": 0.45,
+            "yolo_error_max_prob": 0.95
+        }
+
+    def update_config(self, config_dict):
+        """Actualiza la configuración en tiempo de ejecución para pruebas"""
+        self.sim_config.update(config_dict)
 
     # ==========================================
     # INTERFAZ DE ACTUADORES (Planta Cinemática)
@@ -151,9 +160,10 @@ class TurtleBotMock:
                     detected_class = signal['type']
                     
                     # Lógica de confusión por distancia
-                    # Si la distancia es mayor a ~0.45m, aumentan los errores y falsos negativos
-                    if true_dist > 0.45:
-                        prob_error = min(0.95, (true_dist - 0.45) * 0.4)
+                    reliable_dist = self.sim_config.get("vision_reliable_dist", 0.45)
+                    max_prob = self.sim_config.get("yolo_error_max_prob", 0.95)
+                    if true_dist > reliable_dist:
+                        prob_error = min(max_prob, (true_dist - reliable_dist) * 0.4)
                         
                         # Probabilidad de no detectarlo en absoluto
                         if random.random() < prob_error:

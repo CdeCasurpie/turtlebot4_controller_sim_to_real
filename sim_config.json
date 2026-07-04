@@ -1,0 +1,12 @@
+{
+    "vision_reliable_dist": 0.45,
+    "stop_finish_dist": 1.6,
+    "max_v_target_sim": 0.8,
+    "min_v_target_sim": 0.1,
+    "v_target_turn": 0.3,
+    "w_target_turn": 1.5,
+    "w_target_approach": 2.5,
+    "evasion_frontal_dist": 0.35,
+    "evasion_general_dist": 0.20,
+    "yolo_error_max_prob": 0.95
+}
