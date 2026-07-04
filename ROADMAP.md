@@ -112,6 +112,19 @@ una pared conocida). Si el frente sale desplazado, solo hay que ajustar ese camp
 inferencia sobre imágenes de left y right espejadas manualmente — la clase NO debe voltearse
 con confianza alta.
 
+**AUDITORÍA HECHA (2026-07-04, sin hardware):** se extrajeron los train_args del pickle de
+`yolonanov2/turtlebot_signals_v2_best.pt` (sin torch, vía pickletools). **CONFIRMADO:
+`fliplr=0.5`** — el modelo vio flechas espejadas con la etiqueta sin intercambiar durante
+todo el entrenamiento (60 épocas, imgsz=640, mosaic=1.0, flipud=0.0). Hay que reentrenar
+con `fliplr=0.0`. Señal en las métricas actuales consistente con confusión left→right:
+left recall 0.925 (el peor número de todo el modelo) y right precision 0.947.
+Contexto del entrenamiento: Kaggle, dataset `/kaggle/working/data_merged.yaml`,
+proyecto `runs_finetune`, run `Upsample`, batch=16, lr0=0.001, patience=15.
+**Lo que falta de T3:** (a) reentrenar en Kaggle con `fliplr=0.0` (usuario) → re-exportar
+ONNX opset12 → blob (guía en `vpu_deployment/MODEL_CONVERSION.md`); (b) verificación de
+espejo sobre el modelo nuevo; (c) calibración empírica de focal con la OAK-D (usuario,
+hardware) + `focal_length_px` en config + mapeo de ángulo con atan.
+
 ### [ ] T4 — Filtro temporal k-de-n sobre las detecciones
 **Problema:** un solo frame ≥0.85 dispara transiciones; un falso positivo de `finish`
 termina la carrera permanentemente.
