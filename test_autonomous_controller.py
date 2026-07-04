@@ -259,8 +259,15 @@ def main():
             # 1. ACTUALIZAR TRACKER Y ESTADO SEGÚN YOLO
             # ========================================================
             if len(vision_dets) > 0:
-                # Tomamos la señal más centrada
-                senal = sorted(vision_dets, key=lambda d: abs(d['relative_angle']))[0]
+                # Priorizar la señal que ya estamos trackeando si sigue visible para evitar flickering
+                if tracker['class'] is not None and tracker['frames_lost'] < tracker['max_frames']:
+                    mismas_clase = [d for d in vision_dets if d['class'] == tracker['class']]
+                    if len(mismas_clase) > 0:
+                        senal = sorted(mismas_clase, key=lambda d: abs(d['relative_angle']))[0]
+                    else:
+                        senal = sorted(vision_dets, key=lambda d: abs(d['relative_angle']))[0]
+                else:
+                    senal = sorted(vision_dets, key=lambda d: abs(d['relative_angle']))[0]
                 
                 if tracker['class'] == senal['class']:
                     tracker['consecutive_frames'] += 1
