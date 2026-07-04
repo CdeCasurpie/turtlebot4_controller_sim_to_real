@@ -101,6 +101,7 @@ def main():
     paused = False
 
     estado_actual = "EXPLORANDO"
+    ultimo_giro = 'left'
     tiempo_estado = 0.0
     cooldown_senal = 0.0
     choques = 0
@@ -133,6 +134,7 @@ def main():
             'y': ry,
             'theta': rth,
             'estado_actual': estado_actual,
+            'ultimo_giro': ultimo_giro,
             'tiempo_estado': tiempo_estado,
             'cooldown_senal': cooldown_senal,
             'choques': choques,
@@ -140,12 +142,13 @@ def main():
         }
         
     def set_state(st):
-        nonlocal estado_actual, tiempo_estado, cooldown_senal, choques, tracker
+        nonlocal estado_actual, ultimo_giro, tiempo_estado, cooldown_senal, choques, tracker
         if use_simulator:
             robot._TurtleBotMock__x = st['x']
             robot._TurtleBotMock__y = st['y']
             robot._TurtleBotMock__theta = st['theta']
         estado_actual = st['estado_actual']
+        ultimo_giro = st.get('ultimo_giro', 'left')
         tiempo_estado = st['tiempo_estado']
         cooldown_senal = st['cooldown_senal']
         choques = st.get('choques', choques)
@@ -351,6 +354,7 @@ def main():
                 
                 if espacio:
                     estado_actual = "GIRANDO_IZQ" if estado_actual == "BUSCANDO_IZQ" else "GIRANDO_DER"
+                    ultimo_giro = 'left' if estado_actual == "GIRANDO_IZQ" else 'right'
                     tiempo_estado = 0.0
 
             elif estado_actual in ["GIRANDO_IZQ", "GIRANDO_DER"]:
@@ -431,8 +435,8 @@ def main():
                         estado_actual = "EXPLORANDO" 
                         v_target = c_min_v # Solución al bug de estancamiento (fuerza un pequeño empuje para escapar del loop)
                 else:
-                    # Si no hay salida al frente, rotamos físicamente sobre nuestro eje
-                    w_target = 3.0
+                    # Si no hay salida al frente, rotamos físicamente sobre nuestro eje hacia donde fue el último giro
+                    w_target = 3.0 if ultimo_giro == 'left' else -3.0
 
             # ========================================================
             # 4. ACTUACIÓN FÍSICA Y GUARDADO
