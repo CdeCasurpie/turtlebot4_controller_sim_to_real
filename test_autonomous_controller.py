@@ -306,21 +306,24 @@ def main():
             # ========================================================
             # 2. LÓGICA DE CADA ESTADO
             # ========================================================
+            
+            # Función local para evadir paredes (centrado de pasillos)
+            def calcular_repulsion(scan, rad_amarillo, rad_fuerte, fac_suave, fac_fuerte):
+                min_izq = min(scan[0:180])
+                min_der = min(scan[180:360])
+                f_izq = 0.0
+                f_der = 0.0
+                if min_izq < rad_amarillo:
+                    f_izq = ((rad_amarillo - min_izq) / rad_amarillo) * (fac_fuerte if min_izq < rad_fuerte else fac_suave)
+                if min_der < rad_amarillo:
+                    f_der = ((rad_amarillo - min_der) / rad_amarillo) * (fac_fuerte if min_der < rad_fuerte else fac_suave)
+                return (f_der - f_izq)
+
             if estado_actual == "EXPLORANDO":
                 v_target = max(c_min_v, min(c_max_v, (dist_frente_estricto - 0.4) * c_max_v))
                 
-                force_y = 0.0
-                for i, dist in enumerate(lidar_scan):
-                    if dist < c_rad_amarillo:
-                        ang = i if i <= 180 else i - 360
-                        # Ignorar puntos muy atrás que no importan para avanzar
-                        if abs(ang) < 135:
-                            factor = c_fac_rep_f if dist < c_rad_giro_f else c_fac_rep_s
-                            repulsion = ((c_rad_amarillo - dist) / c_rad_amarillo) * factor
-                            force_y -= math.sin(math.radians(ang)) * repulsion
-                            
                 # Multiplicador empírico para convertir la fuerza en velocidad angular (rad/s)
-                w_target = force_y * 2.5
+                w_target = calcular_repulsion(lidar_scan, c_rad_amarillo, c_rad_giro_f, c_fac_rep_s, c_fac_rep_f) * 2.5
                 
                 # Limitar el giro en exploración para que no dé volantazos exagerados
                 w_target = max(-1.5, min(1.5, w_target))
@@ -329,17 +332,24 @@ def main():
                 # Misma velocidad que explorando
                 v_target = max(c_min_v, min(c_max_v, (dist_frente_estricto - 0.4) * c_max_v))
                 
-                # Centrar la flecha para acercarse a ella sin esquivar paredes lateralmente
+                w_camara = 0.0
                 if tracker['frames_lost'] < tracker['max_frames']:
-                    w_target = tracker['relative_angle'] * c_w_appr
+                    w_camara = tracker['relative_angle'] * c_w_appr
+                
+                # Mantener la flecha pero evadiendo paredes al mismo tiempo
+                w_repulsion = calcular_repulsion(lidar_scan, c_rad_amarillo, c_rad_giro_f, c_fac_rep_s, c_fac_rep_f) * 1.5
+                w_target = w_camara + w_repulsion
                     
             elif estado_actual in ["BUSCANDO_IZQ", "BUSCANDO_DER"]:
                 # Misma velocidad que explorando, la velocidad varía solo si nos vamos a estrellar
                 v_target = max(c_min_v, min(c_max_v, (dist_frente_estricto - 0.4) * c_max_v))
                 
-                # Centrar la flecha usando el tracker (sobrevive si se pierde por unos frames)
+                w_camara = 0.0
                 if tracker['frames_lost'] < tracker['max_frames']:
-                    w_target = tracker['relative_angle'] * c_w_appr
+                    w_camara = tracker['relative_angle'] * c_w_appr
+                    
+                w_repulsion = calcular_repulsion(lidar_scan, c_rad_amarillo, c_rad_giro_f, c_fac_rep_s, c_fac_rep_f) * 1.5
+                w_target = w_camara + w_repulsion
                 
                 dir_search = 'left' if estado_actual == "BUSCANDO_IZQ" else 'right'
                 
