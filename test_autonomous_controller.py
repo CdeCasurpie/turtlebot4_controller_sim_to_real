@@ -439,12 +439,9 @@ def main():
                 if lidar_scan[i] < min_dist_frontal:
                     min_dist_frontal = lidar_scan[i]
             
-            # Umbral de choque frontal (0.32m por defecto o de config)
+            # Umbral de choque frontal (0.35m por defecto o de config)
             if min_dist_frontal < c_evas_f and v_target > 0.05:
                 riesgo_inminente = True
-            # Umbral general reducido a 0.19m (0.17 radio + 0.02 ruido) para evitar falsos positivos por ruido
-            if min(lidar_scan) < c_evas_g:
-                riesgo_inminente = True # Peligro de roce físico real
                 
             if riesgo_inminente or estado_actual == "EVASION_EMERGENCIA":
                 if estado_actual != "EVASION_EMERGENCIA":
