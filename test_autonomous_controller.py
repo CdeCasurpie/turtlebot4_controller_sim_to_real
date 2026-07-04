@@ -225,16 +225,24 @@ def main():
                 tracker['frames_lost'] = 0
             else:
                 tracker['frames_lost'] += 1
+                if estado_actual == "ACERCANDOSE_A_SENAL" and tracker['frames_lost'] >= tracker['max_frames']:
+                    estado_actual = "EXPLORANDO"
 
             if tracker['frames_lost'] < tracker['max_frames'] and cooldown_senal <= 0:
                 clase = tracker['class']
                 dist = tracker['distance']
                 
-                if estado_actual == "EXPLORANDO":
+                if estado_actual in ["EXPLORANDO", "ACERCANDOSE_A_SENAL"]:
                     if clase == 'left':
-                        estado_actual = "BUSCANDO_IZQ"
+                        if dist <= 0.45:
+                            estado_actual = "BUSCANDO_IZQ"
+                        else:
+                            estado_actual = "ACERCANDOSE_A_SENAL"
                     elif clase == 'right':
-                        estado_actual = "BUSCANDO_DER"
+                        if dist <= 0.45:
+                            estado_actual = "BUSCANDO_DER"
+                        else:
+                            estado_actual = "ACERCANDOSE_A_SENAL"
                     elif clase == 'stop' and dist <= 1.6:
                         estado_actual = "DETENIDO"
                         tiempo_estado = 3.0
@@ -261,6 +269,14 @@ def main():
                         target = -90 - (margen - min_dist) * 80.0
                         w_target -= math.radians(target - min_angle) * factor_giro
 
+            elif estado_actual == "ACERCANDOSE_A_SENAL":
+                # Misma velocidad que explorando
+                v_target = max(0.1, min(0.8, (dist_frente_estricto - 0.4) * 0.8))
+                
+                # Centrar la flecha para acercarse a ella sin esquivar paredes lateralmente
+                if tracker['frames_lost'] < tracker['max_frames']:
+                    w_target = tracker['relative_angle'] * 2.5
+                    
             elif estado_actual in ["BUSCANDO_IZQ", "BUSCANDO_DER"]:
                 # Misma velocidad que explorando, la velocidad varía solo si nos vamos a estrellar
                 v_target = max(0.1, min(0.8, (dist_frente_estricto - 0.4) * 0.8))

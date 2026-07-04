@@ -148,8 +148,23 @@ class TurtleBotMock:
                     # La distancia en el robot real se estima con el LiDAR o Pinhole de forma muy imprecisa.
                     noisy_distance = true_dist + random.gauss(0, 0.1 * true_dist) # 10% error
                     
+                    detected_class = signal['type']
+                    
+                    # Lógica de confusión por distancia
+                    # Si la distancia es mayor a ~0.45m, aumentan los errores y falsos negativos
+                    if true_dist > 0.45:
+                        prob_error = min(0.95, (true_dist - 0.45) * 0.4)
+                        
+                        # Probabilidad de no detectarlo en absoluto
+                        if random.random() < prob_error:
+                            continue
+                            
+                        # Probabilidad de confundir la clase (left <-> right)
+                        if detected_class in ['left', 'right'] and random.random() < prob_error:
+                            detected_class = 'right' if detected_class == 'left' else 'left'
+
                     detections.append({
-                        'class': signal['type'],
+                        'class': detected_class,
                         'distance': noisy_distance,
                         'relative_angle': noisy_angle
                     })
