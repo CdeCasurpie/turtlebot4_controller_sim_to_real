@@ -12,6 +12,7 @@ from geometry_msgs.msg import Twist, TwistStamped
 from sensor_msgs.msg import LaserScan
 
 from .vpu_vision import VpuYoloDetector
+from .lidar_processing import process_scan
 
 class _TurtleBotRosNode(Node):
     def __init__(self, config):
@@ -42,9 +43,11 @@ class _TurtleBotRosNode(Node):
         self.scan_sub = self.create_subscription(LaserScan, self.scan_topic, self._scan_callback, 10)
 
         self.latest_scan = None
+        self.latest_scan_time = None  # time.monotonic() de recepción (watchdog)
 
     def _scan_callback(self, msg):
         self.latest_scan = msg
+        self.latest_scan_time = time.monotonic()
 
 
 class TurtleBotReal:
@@ -66,6 +69,12 @@ class TurtleBotReal:
         
         self.max_linear = self.config['robot'].get('max_linear', 1.0)
         self.max_angular = self.config['robot'].get('max_angular', 3.0)
+
+        # Higiene del LiDAR (T2): validez, montaje y watchdog
+        self.lidar_min_valid = self.config['robot'].get('lidar_min_valid', 0.18)
+        self.lidar_front_angle = math.radians(
+            self.config['robot'].get('lidar_front_angle_deg', 90.0))
+        self.scan_stale_after = self.config['robot'].get('scan_stale_after', 0.3)
         
         # Configurar explícitamente el ROS_DOMAIN_ID en las variables de entorno 
         # ANTES de inicializar ROS 2.
@@ -137,32 +146,32 @@ class TurtleBotReal:
         
     def get_lidar_scan(self) -> list:
         """
-        Retorna una lista/array de distancias, homogeneizado a `lidar_resolution`.
+        Retorna una lista de `lidar_resolution` distancias, índice 0 = frente,
+        antihorario. Rayos inválidos (NaN/inf/0.0/reflexiones del chasis) ya
+        vienen saneados a `lidar_max_range`, y la rotación del montaje se
+        deriva de angle_min/angle_increment del mensaje (ver lidar_processing).
         """
-        scan = np.zeros(self.lidar_resolution)
-        scan.fill(self.lidar_max_range)
-        
         msg = self.node.latest_scan
-        if msg is not None:
-            ranges = np.array(msg.ranges)
-            # Limpiar Infs o NaNs generados por el sensor real
-            ranges = np.nan_to_num(ranges, posinf=self.lidar_max_range, neginf=0.0)
-            
-            n_ranges = len(ranges)
-            if n_ranges > 0:
-                # Interpolar al número de rayos del simulador (ej. 360)
-                indices = np.linspace(0, n_ranges - 1, self.lidar_resolution).astype(int)
-                scan = ranges[indices]
-                # Asegurar que nada pase el rango máximo
-                scan = np.clip(scan, 0.0, self.lidar_max_range).tolist()
-                
-                # CORRECCIÓN DE CALIBRACIÓN DE HARDWARE:
-                # El sensor físico del TurtleBot tiene su 0 apuntando hacia la DERECHA del robot.
-                # Como el escáner gira antihorario, el verdadero FRENTE está en el índice 90.
-                # Rotamos el arreglo para que el índice 0 sea siempre el frente.
-                scan = scan[90:] + scan[:90]
-                
-        return scan
+        if msg is None:
+            return [self.lidar_max_range] * self.lidar_resolution
+
+        return process_scan(
+            msg.ranges, msg.angle_min, msg.angle_increment,
+            resolution=self.lidar_resolution,
+            max_range=self.lidar_max_range,
+            min_valid=self.lidar_min_valid,
+            front_offset_rad=self.lidar_front_angle,
+        )
+
+    def scan_age(self) -> float:
+        """
+        Segundos desde el último scan recibido (inf si nunca llegó ninguno).
+        El loop de control debe detener el robot si esto supera
+        `scan_stale_after` — manejar sobre un scan congelado es manejar a ciegas.
+        """
+        if self.node.latest_scan_time is None:
+            return float('inf')
+        return time.monotonic() - self.node.latest_scan_time
 
     def get_vision_detections(self):
         """

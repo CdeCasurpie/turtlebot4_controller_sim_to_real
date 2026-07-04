@@ -9,7 +9,10 @@
         "max_linear": 1.0,
         "max_angular": 3.0,
         "lidar_resolution": 360,
-        "lidar_max_range": 12.0
+        "lidar_max_range": 12.0,
+        "lidar_min_valid": 0.18,
+        "lidar_front_angle_deg": 90.0,
+        "scan_stale_after": 0.3
     },
     "vision": {
         "vpu_blob_path": "../vpu_deployment/models/turtlebot_signals_v2.blob",

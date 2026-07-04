@@ -49,7 +49,7 @@ entorno); la verificación del sim se hizo con harness headless sin pygame + py_
 
 ## FASE 1 — Bugs latentes (cada uno puede perder una corrida por sí solo)
 
-### [ ] T2 — Higiene del LiDAR real: máscara de validez, watchdog, rotación calibrada
+### [x] T2 — Higiene del LiDAR real: máscara de validez, watchdog, rotación calibrada — HECHO 2026-07-04
 **Problema (3 bugs):**
 1. `dist_frente_estricto`, `min_dist_frontal` y `min(lidar_scan)` consumen el scan crudo;
    un rayo inválido `0.0` o una reflexión del chasis (<0.18m) dispara `EVASION_EMERGENCIA`
@@ -66,6 +66,30 @@ entorno); la verificación del sim se hizo con harness headless sin pygame + py_
 **Verificación:** tests unitarios con mensajes `LaserScan` sintéticos (sin robot): scan con un
 0.0 no dispara emergencia; scan viejo → robot se detiene; obstáculo sintético en
 `angle_min + 90°` termina en el índice 0.
+
+**RESULTADO (2026-07-04):** Hecho y verificado. Nuevo módulo puro
+`TurtleBotController/lidar_processing.py` (sin rclpy, testeable en cualquier máquina):
+- `process_scan(ranges, angle_min, angle_increment, ...)`: máscara de validez
+  (NaN/inf/0.0/<0.18m → max_range ANTES de cualquier min()) + remuestreo POR ÁNGULO
+  desde los metadatos del mensaje. El frente físico se define como ángulo láser +90°
+  absoluto (`lidar_front_angle_deg` en config.json), no como "90 índices" — funciona
+  con angle_min≠0, resoluciones crudas arbitrarias (probado con 1147 rayos RPLIDAR-like),
+  escáneres horarios (increment<0) y barridos parciales (rumbos no cubiertos → max_range).
+- `scan_is_stale()` + `TurtleBotReal.scan_age()` (inf si nunca llegó scan) +
+  watchdog en `run_real_autonomous.py`: >0.3s sin /scan → robot detenido.
+- `TurtleBotMock.scan_age()` → 0.0 (paridad de interfaz sim-to-real).
+Verificación: `tests/test_lidar_hygiene.py` 13/13 (incluye integración con el
+controlador: 0.0 en el cono frontal ya NO dispara emergencia; obstáculo real a
+0.25m SÍ); smoke de T1 sigue 9/9; py_compile de los 4 archivos tocados OK.
+**Hallazgos extra (2 bugs no listados originalmente):**
+1. `np.nan_to_num` viejo convertía NaN → 0.0 (¡fabricaba el rayo inválido que
+   luego disparaba la emergencia permanente!).
+2. Con `latest_scan=None` (antes del primer mensaje), `get_lidar_scan()` devolvía
+   un scan "todo libre" de 360 rayos → el guard `len<360` del loop nunca disparaba
+   y el robot podía arrancar A CIEGAS. El watchdog (age=inf) ahora lo impide.
+**Pendiente de hardware:** validar en el robot real que `lidar_front_angle_deg=90`
+es el montaje correcto (una corrida corta mirando el log de `dist_frente` contra
+una pared conocida). Si el frente sale desplazado, solo hay que ajustar ese campo.
 
 ### [ ] T3 — Calibración de visión + auditoría del entrenamiento (fliplr)
 **Problema (2 bugs):**
@@ -201,6 +225,11 @@ mejora el tiempo medio. Un cambio a la vez, con reporte guardado en `reports/`.
 ## Registro de decisiones y hallazgos
 (Anotar aquí al cerrar cada tarea: qué se encontró, qué se decidió, qué quedó pendiente.)
 
+- 2026-07-04 (T2): LiDAR real saneado en `TurtleBotController/lidar_processing.py`.
+  Dos bugs extra encontrados: nan_to_num fabricaba rayos 0.0 desde NaN, y sin scan
+  inicial el robot recibía un mapa "todo libre" (arrancaba a ciegas). Rotación ahora
+  derivada de angle_min/angle_increment; watchdog de 0.3s en el loop real. Queda un
+  chequeo de hardware barato: confirmar lidar_front_angle_deg=90 contra una pared.
 - 2026-07-04 (T1): Controlador extraído a `controller/navigation.py`, verificado bit a bit
   contra la lógica original. Bug nuevo encontrado y corregido: el sim sumaba (no concatenaba)
   los slices del cono frontal por ser ndarray → distancia frontal ~2× → velocidad media

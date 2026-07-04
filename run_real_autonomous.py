@@ -25,6 +25,16 @@ def main():
 
     try:
         while True:
+            # Watchdog (T2): si /scan dejó de llegar, el scan está congelado
+            # y manejar con él es manejar a ciegas → robot quieto hasta que vuelva.
+            age = robot.scan_age()
+            if age > robot.scan_stale_after:
+                robot.move(0.0, 0.0, dt)
+                sys.stdout.write(
+                    f"\r[WATCHDOG] Sin LiDAR hace {min(age, 999.9):5.1f}s — robot detenido        ")
+                sys.stdout.flush()
+                continue
+
             lidar_scan = robot.get_lidar_scan()
             vision_dets = robot.get_vision_detections()
 

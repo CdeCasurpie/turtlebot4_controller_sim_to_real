@@ -93,6 +93,13 @@ class TurtleBotMock:
             
         return scan
 
+    def scan_age(self) -> float:
+        """
+        Paridad de interfaz con TurtleBotReal (watchdog de datos viejos):
+        el mock genera el scan on-demand, así que nunca está viejo.
+        """
+        return 0.0
+
     def get_vision_detections(self):
         """
         Mock de YOLO + Sensor Fusion con LiDAR.
