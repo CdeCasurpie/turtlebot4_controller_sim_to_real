@@ -536,9 +536,14 @@ def main():
 
             robot_px_radius = int(robot.radius * SCALE)
             
-            # Anillo rojo (Límite de colisión) y Anillo amarillo (Límite de evasión frontal)
-            pygame.draw.circle(screen, (200, 50, 50), (rsx, rsy), int(0.20 * SCALE), 1)
-            pygame.draw.circle(screen, (200, 200, 50), (rsx, rsy), int(0.35 * SCALE), 1)
+            # Anillo rojo (Límite de colisión lateral)
+            pygame.draw.circle(screen, (200, 50, 50), (rsx, rsy), int(c_evas_g * SCALE), 1)
+            # Anillo naranja (Límite de evasión frontal)
+            pygame.draw.circle(screen, (255, 100, 0), (rsx, rsy), int(c_evas_f * SCALE), 1)
+            # Anillo amarillo oscuro (Límite de giro fuerte/repulsión)
+            pygame.draw.circle(screen, (200, 180, 50), (rsx, rsy), int(c_rad_giro_f * SCALE), 1)
+            # Anillo amarillo claro (Límite de giro suave/exploración)
+            pygame.draw.circle(screen, (255, 255, 0), (rsx, rsy), int(c_rad_amarillo * SCALE), 1)
             
             pygame.draw.circle(screen, (50, 255, 100), (rsx, rsy), robot_px_radius)
             hx, hy = to_screen(rx + robot.radius * math.cos(rtheta), ry + robot.radius * math.sin(rtheta))
