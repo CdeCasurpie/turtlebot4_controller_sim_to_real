@@ -33,7 +33,8 @@ def buscar_camino_libre(lidar_points, radio_robot, direccion='front', margen_ext
         angulos = [-20, -13, -6, 0, 6, 13, 20]
         M = 5
     else:
-        angulos = range(0, 360, 30) # 12 ángulos
+        # Ordenados para priorizar ángulos más cercanos al frente
+        angulos = [30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180] 
         M = 3 # Solo 3 pasos para escapar rápido
         
     margen = radio_robot + margen_extra
@@ -470,8 +471,19 @@ def main():
                         cooldown_senal = c_cool_post # Evitar volver a leer el cartel que nos metió en problemas
                         v_target = c_min_v # Solución al bug de estancamiento (fuerza un pequeño empuje para escapar del loop)
                 else:
-                    # Si no hay salida al frente, rotamos físicamente sobre nuestro eje hacia donde fue el último giro
-                    w_target = 3.0 if ultimo_giro == 'left' else -3.0
+                    # Si acabamos de girar (cooldown activo), seguimos girando en esa misma dirección
+                    if cooldown_senal > 0:
+                        w_target = 3.0 if ultimo_giro == 'left' else -3.0
+                    else:
+                        # Buscamos la ruta libre más cercana (menor rotación requerida)
+                        esp_escape_all, ang_escape_all, _, _, _ = buscar_camino_libre(lidar_points, robot.radius, 'all', 0.0)
+                        if esp_escape_all:
+                            ang_rel_all = ang_escape_all if ang_escape_all <= 180 else ang_escape_all - 360
+                            # Girar hacia donde la rotación sea más corta
+                            w_target = 3.0 if ang_rel_all > 0 else -3.0
+                        else:
+                            # Sin salida, giramos por defecto
+                            w_target = 3.0
 
             # ========================================================
             # 4. ACTUACIÓN FÍSICA Y GUARDADO
@@ -634,7 +646,8 @@ def main():
                 img = font.render(det['class'], True, (255, 255, 0))
                 screen.blit(img, (sx + 15, sy - 10))
 
-        mode_text = "SIMULADOR" if use_simulator else f"ROBOT REAL (FPS: {1.0/max(0.001, dt):.1f})"
+        fps = clock.get_fps()
+        mode_text = f"SIMULADOR (FPS: {fps:.1f})" if use_simulator else f"ROBOT REAL (FPS: {1.0/max(0.001, dt):.1f})"
         screen.blit(pygame.font.SysFont(None, 36).render(f"[{mode_text}] Algoritmo: {estado_actual}", True, (255, 255, 255)), (10, 10))
         if cooldown_senal > 0:
             screen.blit(pygame.font.SysFont(None, 24).render(f"(Ignorando señales por: {cooldown_senal:.1f}s para evitar bucle)", True, (255, 200, 0)), (400, 15))
