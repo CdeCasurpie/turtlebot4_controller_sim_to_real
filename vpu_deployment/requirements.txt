@@ -1,0 +1,6 @@
+# depthai 3.x reestructuró la API (sin YoloDetectionNetwork/XLinkIn/XLinkOut, Pipeline
+# atado a un Device) e incumple el pipeline usado en test_depthai_yolo.py y en
+# TurtleBotController/vpu_vision.py. Se necesita la rama 2.x.
+depthai<3
+opencv-python
+numpy
