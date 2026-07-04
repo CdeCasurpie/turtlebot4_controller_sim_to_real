@@ -56,11 +56,12 @@ def editor_mode(screen, world, clock):
                 elif event.key == pygame.K_1: signal_mode = 'left'
                 elif event.key == pygame.K_2: signal_mode = 'right'
                 elif event.key == pygame.K_3: signal_mode = 'stop'
+                elif event.key == pygame.K_4: signal_mode = 'finish'
                 elif event.key == pygame.K_r: signal_mode = 'robot_pos'
                 elif event.key == pygame.K_t: signal_mode = 'robot_theta'
                 
             elif event.type == pygame.KEYUP:
-                if event.key in [pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_r, pygame.K_t]:
+                if event.key in [pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_r, pygame.K_t]:
                     signal_mode = None
                     
             elif event.type == pygame.MOUSEBUTTONDOWN:
@@ -74,7 +75,7 @@ def editor_mode(screen, world, clock):
                         dx = wx - world.robot_start['x']
                         dy = wy - world.robot_start['y']
                         world.robot_start['theta'] = math.atan2(dy, dx)
-                    elif signal_mode in ['left', 'right', 'stop'] and world.obstacles:
+                    elif signal_mode in ['left', 'right', 'stop', 'finish'] and world.obstacles:
                         # Pegar la flecha al muro más cercano
                         min_dist = float('inf')
                         best_pt = None
@@ -122,7 +123,7 @@ def editor_mode(screen, world, clock):
             
         # Textos informativos
         text = "EDITOR | Click: Muro | C: Cerrar | Enter: Guardar y Jugar"
-        text2 = "[1,2,3]+Click: Señales | [R]+Click: Pos Robot | [T]+Click: Orientación Robot"
+        text2 = "[1,2,3,4]+Click: Señales | [R]+Click: Pos Robot | [T]+Click: Orientación Robot"
         if signal_mode:
             if signal_mode == 'robot_pos': text2 = "Modificando Posición del Robot (Haz click)"
             elif signal_mode == 'robot_theta': text2 = "Modificando Orientación del Robot (Haz click hacia donde mirará)"
