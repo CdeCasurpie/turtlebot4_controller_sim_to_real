@@ -64,6 +64,10 @@ class TurtleBotReal:
         """
         Inicializa el robot real conectándose a los tópicos de ROS 2 en background.
         """
+        self.target_v = 0.0
+        self.target_omega = 0.0
+        self.is_running = True
+        
         # Cargar configuración
         base_dir = os.path.dirname(os.path.abspath(__file__))
         config_file = os.path.join(base_dir, config_path)
@@ -106,37 +110,51 @@ class TurtleBotReal:
         self.ros_thread = threading.Thread(target=self._spin_ros, daemon=True)
         self.ros_thread.start()
         
+        self.pub_thread = threading.Thread(target=self._continuous_publisher, daemon=True)
+        self.pub_thread.start()
+        
+        self.latest_detections = []
+        self.vision_thread = threading.Thread(target=self._vision_worker, daemon=True)
+        self.vision_thread.start()
+        
         # Dar un pequeño tiempo de gracia para que lleguen los primeros mensajes
         print("[TurtleBotController] Esperando sensores (1 segundo)...")
         time.sleep(1.0)
         print("[TurtleBotController] ¡Robot Real Listo para actuar!")
         
+    def _continuous_publisher(self):
+        # Hilo de fondo que publica a 10 Hz constantes para evitar el watchdog
+        rate = 0.1 # 100ms
+        while self.is_running:
+            if hasattr(self, 'node') and self.node is not None:
+                if self.node.use_twist_stamped:
+                    msg = TwistStamped()
+                    msg.header.stamp = self.node.get_clock().now().to_msg()
+                    msg.header.frame_id = "base_link"
+                    msg.twist.linear.x = float(self.target_v)
+                    msg.twist.angular.z = float(self.target_omega)
+                else:
+                    msg = Twist()
+                    msg.linear.x = float(self.target_v)
+                    msg.angular.z = float(self.target_omega)
+                    
+                self.node.cmd_pub.publish(msg)
+            time.sleep(rate)
+
     def _spin_ros(self):
         rclpy.spin(self.node)
         
     def move(self, v: float, omega: float, dt: float) -> bool:
         """
-        Publica las velocidades deseadas en ROS y duerme por 'dt' segundos.
-        A diferencia del simulador, siempre retorna False (porque las físicas reales
-        dependerían de leer un bumper o el LIDAR).
+        Actualiza las velocidades deseadas. El hilo en segundo plano (_continuous_publisher)
+        se encarga de enviarlas ininterrumpidamente a ROS.
         """
         # Limitar la velocidad por seguridad
-        v = max(-self.max_linear, min(self.max_linear, v))
-        omega = max(-self.max_angular, min(self.max_angular, omega))
+        self.target_v = max(-self.max_linear, min(self.max_linear, v))
+        self.target_omega = max(-self.max_angular, min(self.max_angular, omega))
         
-        if self.node.use_twist_stamped:
-            msg = TwistStamped()
-            msg.header.stamp = self.node.get_clock().now().to_msg()
-            msg.header.frame_id = "base_link"
-            msg.twist.linear.x = float(v)
-            msg.twist.angular.z = float(omega)
-        else:
-            msg = Twist()
-            msg.linear.x = float(v)
-            msg.angular.z = float(omega)
-            
-        self.node.cmd_pub.publish(msg)
-        time.sleep(dt)
+        # Sincronizador base a 20Hz para los scripts autónomos
+        time.sleep(0.05)
         
         return False
         
@@ -169,47 +187,49 @@ class TurtleBotReal:
                 
         return scan
 
+    def _vision_worker(self):
+        while self.is_running:
+            frame = self.node.latest_image
+            if frame is not None and self.yolo_model is not None:
+                h, w = frame.shape[:2]
+                try:
+                    results = self.yolo_model(frame, verbose=False, conf=self.conf_threshold)
+                    new_dets = []
+                    if len(results) > 0:
+                        boxes = results[0].boxes
+                        for box in boxes:
+                            cls_id = int(box.cls[0])
+                            class_name = self.yolo_model.names[cls_id]
+                            
+                            x1, y1, x2, y2 = box.xyxy[0].tolist()
+                            cx = (x1 + x2) / 2.0
+                            
+                            normalized_x = (cx - (w / 2.0)) / (w / 2.0)
+                            relative_angle = -normalized_x * (self.camera_fov / 2.0)
+                            
+                            bbox_width = max(x2 - x1, 1.0)
+                            focal_length = w
+                            real_width = 0.20 
+                            distance = (real_width * focal_length) / bbox_width
+                            
+                            new_dets.append({
+                                'class': class_name,
+                                'distance': distance,
+                                'relative_angle': relative_angle
+                            })
+                    self.latest_detections = new_dets
+                except Exception:
+                    pass
+            time.sleep(0.01)
+
     def get_vision_detections(self):
         """
-        Pasa la última imagen por el modelo YOLO y retorna una lista en formato:
-        [{'class': 'left', 'distance': 1.5, 'relative_angle': 0.1}, ...]
+        Retorna la última detección calculada asíncronamente por _vision_worker.
         """
-        detections = []
-        frame = self.node.latest_image
-        
-        if frame is not None and self.yolo_model is not None:
-            h, w = frame.shape[:2]
-            results = self.yolo_model(frame, verbose=False, conf=self.conf_threshold)
-            
-            if len(results) > 0:
-                boxes = results[0].boxes
-                for box in boxes:
-                    cls_id = int(box.cls[0])
-                    class_name = self.yolo_model.names[cls_id]
-                    
-                    x1, y1, x2, y2 = box.xyxy[0].tolist()
-                    cx = (x1 + x2) / 2.0
-                    
-                    # Calcular ángulo relativo
-                    # Pixeles mapeados desde -1 (izq) a 1 (der)
-                    normalized_x = (cx - (w / 2.0)) / (w / 2.0)
-                    relative_angle = -normalized_x * (self.camera_fov / 2.0)
-                    
-                    # Estimar distancia asumiendo un tamaño de señal estándar (aprox 20 cm)
-                    # Formula empírica de Pinhole Camera:
-                    bbox_width = max(x2 - x1, 1.0)
-                    focal_length = w  # Asumimos que el FOV es aproximadamente de 1 radian para este cálculo simple
-                    real_width = 0.20 # 20cm
-                    distance = (real_width * focal_length) / bbox_width
-                    
-                    detections.append({
-                        'class': class_name,
-                        'distance': distance,
-                        'relative_angle': relative_angle
-                    })
-                    
-        return detections
+        return self.latest_detections
 
     def stop(self):
         """Detiene el robot completamente."""
-        self.move(0.0, 0.0, 0.1)
+        self.target_v = 0.0
+        self.target_omega = 0.0
+        time.sleep(0.1)

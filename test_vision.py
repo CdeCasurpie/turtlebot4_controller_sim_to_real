@@ -19,6 +19,15 @@ def main():
     
     dt = 0.1  # 10 Hz
     
+    # Tracker temporal para YOLO
+    tracker = {
+        'class': None,
+        'relative_angle': 0.0,
+        'distance': float('inf'),
+        'frames_lost': 999,
+        'max_frames': 15  # Mantiene la señal por ~1.5s (a 10Hz)
+    }
+    
     try:
         while True:
             scan = robot.get_lidar_scan()
@@ -28,45 +37,51 @@ def main():
                 time.sleep(dt)
                 continue
                 
+            # Filtro de ruido del chasis del robot
+            scan = [d if d >= 0.18 else robot.lidar_max_range for d in scan]
+                
             v_target = 0.0
             w_target = 0.0
             
             if len(detecciones) > 0:
-                # Tomamos la señal más grande/cercana
-                senal = sorted(detecciones, key=lambda d: d['distance'])[0]
-                clase = senal['class']
-                angulo_rel_rad = senal['relative_angle']
+                # Tomamos la señal más centrada
+                senal = sorted(detecciones, key=lambda d: abs(d['relative_angle']))[0]
                 
-                # Convertimos el ángulo a grados para buscarlo en el LiDAR
+                tracker['class'] = senal['class']
+                tracker['relative_angle'] = senal['relative_angle']
+                
+                # Distancia extraída desde el LiDAR en la dirección de la señal (+- 5 grados)
+                ang_grados = int(math.degrees(senal['relative_angle']))
+                dist_lidar = min([scan[(ang_grados + i) % 360] for i in range(-5, 6)])
+                
+                tracker['distance'] = dist_lidar
+                tracker['frames_lost'] = 0
+            else:
+                tracker['frames_lost'] += 1
+                
+            if tracker['frames_lost'] < tracker['max_frames']:
+                clase = tracker['class']
+                angulo_rel_rad = tracker['relative_angle']
                 ang_deg = math.degrees(angulo_rel_rad)
-                
-                # El LiDAR tiene el 0 al frente. 
-                # Ángulos positivos son a la izquierda (antihorario).
-                # Ángulos negativos son a la derecha (horario).
-                if ang_deg >= 0:
-                    idx_lidar = int(ang_deg) % 360
-                else:
-                    idx_lidar = int(360 + ang_deg) % 360
-                    
-                distancia_lidar = scan[idx_lidar]
+                distancia_lidar = tracker['distance']
                 
                 # Lógica de alineación: Girar proporcionalmente al error angular
-                # Si el ángulo es positivo (está a la izquierda), gira a la izquierda (w positivo)
-                # Si el ángulo es negativo (está a la derecha), gira a la derecha (w negativo)
-                
-                # Zona muerta: si ya está centrado (+- 3 grados), no girar
                 if abs(ang_deg) > 3.0:
                     w_target = angulo_rel_rad * 1.5  # Constante proporcional
                 else:
                     w_target = 0.0
                 
                 # Imprimir en consola lo que ve
-                estado_giro = "CENTRADOR" if w_target == 0.0 else ("GIRANDO IZQ" if w_target > 0 else "GIRANDO DER")
+                if tracker['frames_lost'] > 0:
+                    estado_giro = f"TRACKING (Lost: {tracker['frames_lost']})" + (" ↺" if w_target > 0 else " ↻" if w_target < 0 else " ✓")
+                else:
+                    estado_giro = "CENTRADO " if w_target == 0.0 else ("GIRANDO IZQ" if w_target > 0 else "GIRANDO DER")
+                    
                 sys.stdout.write(f"\r👁️  Señal: '{clase.upper()}' | Ángulo: {ang_deg:>5.1f}° | LiDAR Dist: {distancia_lidar:.2f}m | {estado_giro}       ")
                 sys.stdout.flush()
                 
             else:
-                # No hay detecciones
+                # No hay detecciones y se perdió el tracker
                 sys.stdout.write(f"\rBuscando... (Ninguna señal en cámara)                                           ")
                 sys.stdout.flush()
                 

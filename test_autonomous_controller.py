@@ -6,6 +6,12 @@ import numpy as np
 
 from Simulator.WorldSim.world import World
 from Simulator.TurtleBotSim.turtlebot import TurtleBotMock
+import time
+
+use_simulator = "--simulator" in sys.argv
+
+if not use_simulator:
+    from TurtleBotController.turtlebot import TurtleBotReal
 
 SCALE = 50.0
 WIDTH, HEIGHT = 800, 600
@@ -17,10 +23,10 @@ def to_screen(x, y):
 def buscar_camino_libre(lidar_points, radio_robot, direccion='front', margen_extra=0.10):
     # Aperturas optimizadas: 7 ángulos, M menor
     if direccion == 'left':
-        angulos = [50, 63, 76, 90, 103, 116, 130]
+        angulos = [85, 90, 95]
         M = 5
     elif direccion == 'right':
-        angulos = [230, 243, 256, 270, 283, 296, 310]
+        angulos = [265, 270, 275]
         M = 5
     elif direccion == 'front':
         angulos = [-20, -13, -6, 0, 6, 13, 20]
@@ -68,23 +74,28 @@ def main():
     pygame.display.set_caption("TurtleBot 4 - Navegación Definitiva Anti-Choques")
     clock = pygame.time.Clock()
 
-    world = World()
-    map_file = "world_map.json"
+    if use_simulator:
+        world = World()
+        map_file = "world_map.json"
 
-    if os.path.exists(map_file):
-        world.load_from_file(map_file)
+        if os.path.exists(map_file):
+            world.load_from_file(map_file)
+        else:
+            print("No se encontró mapa.")
+            sys.exit()
+
+        robot = TurtleBotMock(
+            world, 
+            initial_x=world.robot_start['x'], 
+            initial_y=world.robot_start['y'], 
+            initial_theta=world.robot_start['theta']
+        )
+        dt = 1 / 30.0
     else:
-        print("No se encontró mapa.")
-        sys.exit()
+        robot = TurtleBotReal("config.json")
+        world = None
+        dt = 0.05
 
-    robot = TurtleBotMock(
-        world, 
-        initial_x=world.robot_start['x'], 
-        initial_y=world.robot_start['y'], 
-        initial_theta=world.robot_start['theta']
-    )
-
-    dt = 1 / 60.0
     running = True
     paused = False
 
@@ -92,6 +103,15 @@ def main():
     tiempo_estado = 0.0
     cooldown_senal = 0.0
     choques = 0
+    
+    # Tracker temporal para YOLO
+    tracker = {
+        'class': None,
+        'relative_angle': 0.0,
+        'distance': float('inf'),
+        'frames_lost': 999,
+        'max_frames': 90  # 3 segundos a 30 FPS
+    }
     
     v_target = 0.0
     w_target = 0.0
@@ -101,7 +121,11 @@ def main():
     time_since_save = 0.0
 
     def get_current_state():
-        rx, ry, rth = robot._get_true_pose()
+        if use_simulator:
+            rx, ry, rth = robot._get_true_pose()
+        else:
+            rx, ry, rth = 0.0, 0.0, 0.0
+            
         return {
             'x': rx,
             'y': ry,
@@ -109,29 +133,38 @@ def main():
             'estado_actual': estado_actual,
             'tiempo_estado': tiempo_estado,
             'cooldown_senal': cooldown_senal,
-            'choques': choques
+            'choques': choques,
+            'tracker': dict(tracker)
         }
         
     def set_state(st):
-        nonlocal estado_actual, tiempo_estado, cooldown_senal, choques
-        robot._TurtleBotMock__x = st['x']
-        robot._TurtleBotMock__y = st['y']
-        robot._TurtleBotMock__theta = st['theta']
+        nonlocal estado_actual, tiempo_estado, cooldown_senal, choques, tracker
+        if use_simulator:
+            robot._TurtleBotMock__x = st['x']
+            robot._TurtleBotMock__y = st['y']
+            robot._TurtleBotMock__theta = st['theta']
         estado_actual = st['estado_actual']
         tiempo_estado = st['tiempo_estado']
         cooldown_senal = st['cooldown_senal']
         choques = st.get('choques', choques)
+        tracker = dict(st.get('tracker', tracker))
 
     history.append(get_current_state())
     history_index = 0
-    view_mode = "global"
+    view_mode = "global" if use_simulator else "robot"
+    last_time = time.time()
 
     while running:
+        if not use_simulator:
+            current_time = time.time()
+            dt = current_time - last_time
+            last_time = current_time
+            
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
             elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_l:
+                if event.key == pygame.K_l and use_simulator:
                     view_mode = "robot" if view_mode == "global" else "global"
                 elif event.key == pygame.K_SPACE:
                     paused = not paused
@@ -146,7 +179,14 @@ def main():
                         history_index += 1
                         set_state(history[history_index])
 
-        lidar_scan = robot.get_lidar_scan()
+        lidar_scan_raw = robot.get_lidar_scan()
+        if len(lidar_scan_raw) < 360:
+            if not use_simulator:
+                time.sleep(0.05)
+            continue
+            
+        # Filtrar reflexiones propias del chasis simulando el hardware real
+        lidar_scan = [d if d >= 0.18 else robot.lidar_max_range for d in lidar_scan_raw]
         vision_dets = robot.get_vision_detections()
         
         # Pre-computar puntos x,y del lidar para que la función sea ultra rápida
@@ -169,12 +209,26 @@ def main():
             dist_frente_estricto = min(lidar_scan[0:15] + lidar_scan[345:360])
 
             # ========================================================
-            # 1. ACTUALIZAR ESTADO SEGÚN YOLO 
+            # 1. ACTUALIZAR TRACKER Y ESTADO SEGÚN YOLO
             # ========================================================
-            if len(vision_dets) > 0 and cooldown_senal <= 0:
-                senal = sorted(vision_dets, key=lambda d: d['distance'])[0]
-                clase = senal['class']
-                dist = senal['distance']
+            if len(vision_dets) > 0:
+                # Tomamos la señal más centrada
+                senal = sorted(vision_dets, key=lambda d: abs(d['relative_angle']))[0]
+                
+                # Distancia extraída desde el LiDAR en la dirección de la señal
+                ang_grados = int(math.degrees(senal['relative_angle']))
+                dist_lidar = min([lidar_scan[(ang_grados + i) % 360] for i in range(-5, 6)])
+                
+                tracker['class'] = senal['class']
+                tracker['relative_angle'] = senal['relative_angle']
+                tracker['distance'] = dist_lidar
+                tracker['frames_lost'] = 0
+            else:
+                tracker['frames_lost'] += 1
+
+            if tracker['frames_lost'] < tracker['max_frames'] and cooldown_senal <= 0:
+                clase = tracker['class']
+                dist = tracker['distance']
                 
                 if estado_actual == "EXPLORANDO":
                     if clase == 'left':
@@ -209,14 +263,18 @@ def main():
                 # Misma velocidad que explorando, la velocidad varía solo si nos vamos a estrellar
                 v_target = max(0.1, min(0.8, (dist_frente_estricto - 0.4) * 0.8))
                 
-                # Centrar la flecha y avanzar
-                if len(vision_dets) > 0:
-                    senal = sorted(vision_dets, key=lambda d: d['distance'])[0]
-                    w_target = senal['relative_angle'] * 2.5
+                # Centrar la flecha usando el tracker (sobrevive si se pierde por unos frames)
+                if tracker['frames_lost'] < tracker['max_frames']:
+                    w_target = tracker['relative_angle'] * 2.5
                 
-                # Barrido de 40 grados hacia la izquierda o derecha
                 dir_search = 'left' if estado_actual == "BUSCANDO_IZQ" else 'right'
+                
+                # Probar con margen grueso, medio, y finalmente el radio exacto
                 espacio, _, intentos, dists, marg = buscar_camino_libre(lidar_points, robot.radius, dir_search, 0.10)
+                if not espacio:
+                    espacio, _, intentos, dists, marg = buscar_camino_libre(lidar_points, robot.radius, dir_search, 0.05)
+                if not espacio:
+                    espacio, _, intentos, dists, marg = buscar_camino_libre(lidar_points, robot.radius, dir_search, 0.0)
                 
                 intentos_render = intentos
                 render_distancias = dists
@@ -227,20 +285,28 @@ def main():
                     tiempo_estado = 0.0
 
             elif estado_actual in ["GIRANDO_IZQ", "GIRANDO_DER"]:
-                # Mantenemos la velocidad alta para no ir lento en el giro
-                v_target = max(0.1, min(0.8, (dist_frente_estricto - 0.4) * 0.8))
-                w_target = 2.0 if estado_actual == "GIRANDO_IZQ" else -2.0
+                # Avanzamos y giramos más rápido para no chocar con la pared frontal
+                v_target = 0.3 
+                w_target = 1.5 if estado_actual == "GIRANDO_IZQ" else -1.5
                 tiempo_estado += dt
                 
                 # Verificamos visualmente el frente (para debug en UI)
                 espacio_frente, _, intentos, dists, marg = buscar_camino_libre(lidar_points, robot.radius, 'front', 0.10)
+                if not espacio_frente:
+                    espacio_frente, _, intentos, dists, marg = buscar_camino_libre(lidar_points, robot.radius, 'front', 0.05)
+                if not espacio_frente:
+                    espacio_frente, _, intentos, dists, marg = buscar_camino_libre(lidar_points, robot.radius, 'front', 0.0)
+                
                 intentos_render = intentos
                 render_distancias = dists
                 render_margen = marg
                 
-                # Girar exactamente 80 grados. 
-                # 80 grados = 1.396 rad. A w=2.0 rad/s, tiempo = 0.7s
-                if tiempo_estado >= 0.7: 
+                # A 1.5 rad/s, 90 grados toman ~1.05 segundos.
+                if tiempo_estado >= 0.8 and espacio_frente: 
+                    estado_actual = "EXPLORANDO"
+                    cooldown_senal = 0.2
+                # Evitar girar infinitamente
+                elif tiempo_estado >= 2.0:
                     estado_actual = "EXPLORANDO"
                     cooldown_senal = 0.2
 
@@ -322,7 +388,11 @@ def main():
                 if dist_p < robot.lidar_max_range:
                     lidar_points.append((dist_p * math.cos(math.radians(i)), dist_p * math.sin(math.radians(i))))
                     
-            _, _, intentos_render, render_distancias, render_margen = buscar_camino_libre(lidar_points, robot.radius, dir_search, margen)
+            esp, _, intentos_render, render_distancias, render_margen = buscar_camino_libre(lidar_points, robot.radius, dir_search, margen)
+            if not esp and margen >= 0.10:
+                esp, _, intentos_render, render_distancias, render_margen = buscar_camino_libre(lidar_points, robot.radius, dir_search, 0.05)
+            if not esp and margen >= 0.05:
+                _, _, intentos_render, render_distancias, render_margen = buscar_camino_libre(lidar_points, robot.radius, dir_search, 0.0)
 
         # ========================================================
         # 5. RENDERIZADO VISUAL
@@ -330,9 +400,10 @@ def main():
         screen.fill((30, 30, 30))
         font = pygame.font.SysFont(None, 24)
         
-        rx, ry, rtheta = robot._get_true_pose()
+        if use_simulator:
+            rx, ry, rtheta = robot._get_true_pose()
         
-        if view_mode == "global":
+        if view_mode == "global" and use_simulator:
             # --- RENDER GLOBAL (Original) ---
             for p1, p2 in world.obstacles:
                 pygame.draw.line(screen, (200, 200, 200), to_screen(*p1), to_screen(*p2), 2)
@@ -365,8 +436,8 @@ def main():
                     end_y = ry + dist * math.sin(ray_angle)
                     esx, esy = to_screen(end_x, end_y)
                     
-                    if dist < 0.7 and (i < 120 or i > 240):
-                        if dist < 0.4:
+                    if dist < 0.35 and (i < 120 or i > 240):
+                        if dist < 0.20:
                             pygame.draw.circle(screen, (255, 0, 0), (esx, esy), 2)
                         else:
                             pygame.draw.circle(screen, (255, 165, 0), (esx, esy), 2)
@@ -381,6 +452,11 @@ def main():
             pygame.draw.line(screen, (0, 100, 255), (rsx, rsy), (fr_x, fr_y), 1)
 
             robot_px_radius = int(robot.radius * SCALE)
+            
+            # Anillo rojo (Límite de colisión) y Anillo amarillo (Límite de evasión frontal)
+            pygame.draw.circle(screen, (200, 50, 50), (rsx, rsy), int(0.20 * SCALE), 1)
+            pygame.draw.circle(screen, (200, 200, 50), (rsx, rsy), int(0.35 * SCALE), 1)
+            
             pygame.draw.circle(screen, (50, 255, 100), (rsx, rsy), robot_px_radius)
             hx, hy = to_screen(rx + robot.radius * math.cos(rtheta), ry + robot.radius * math.sin(rtheta))
             pygame.draw.line(screen, (255, 255, 255), (rsx, rsy), (hx, hy), 3)
@@ -393,13 +469,13 @@ def main():
             angle_increment = (2 * math.pi) / robot.lidar_resolution
             for i, dist in enumerate(lidar_scan):
                 if dist < robot.lidar_max_range:
-                    # En vista local, theta=0 es hacia arriba. (en pygame y crece hacia abajo)
-                    screen_angle = math.pi / 2 - i * angle_increment
+                    # Sumamos el ángulo para invertir el render y que izquierda sea izquierda
+                    screen_angle = math.pi / 2 + i * angle_increment
                     esx = int(rsx + dist * math.cos(screen_angle) * SCALE)
                     esy = int(rsy - dist * math.sin(screen_angle) * SCALE)
                     
-                    if dist < 0.7 and (i < 120 or i > 240):
-                        if dist < 0.4:
+                    if dist < 0.35 and (i < 120 or i > 240):
+                        if dist < 0.20:
                             pygame.draw.circle(screen, (255, 0, 0), (esx, esy), 3)
                         else:
                             pygame.draw.circle(screen, (255, 165, 0), (esx, esy), 2)
@@ -426,7 +502,7 @@ def main():
             for det in vision_dets:
                 dist = det['distance']
                 rel_a = det['relative_angle']
-                screen_angle = math.pi / 2 - rel_a
+                screen_angle = math.pi / 2 + rel_a
                 
                 sx = int(rsx + dist * math.cos(screen_angle) * SCALE)
                 sy = int(rsy - dist * math.sin(screen_angle) * SCALE)
@@ -435,9 +511,10 @@ def main():
                 img = font.render(det['class'], True, (255, 255, 0))
                 screen.blit(img, (sx + 15, sy - 10))
 
-        screen.blit(pygame.font.SysFont(None, 36).render(f"Algoritmo: {estado_actual}", True, (255, 255, 255)), (10, 10))
+        mode_text = "SIMULADOR" if use_simulator else f"ROBOT REAL (FPS: {1.0/max(0.001, dt):.1f})"
+        screen.blit(pygame.font.SysFont(None, 36).render(f"[{mode_text}] Algoritmo: {estado_actual}", True, (255, 255, 255)), (10, 10))
         if cooldown_senal > 0:
-            screen.blit(pygame.font.SysFont(None, 24).render(f"(Ignorando señales por: {cooldown_senal:.1f}s para evitar bucle)", True, (255, 200, 0)), (350, 15))
+            screen.blit(pygame.font.SysFont(None, 24).render(f"(Ignorando señales por: {cooldown_senal:.1f}s para evitar bucle)", True, (255, 200, 0)), (400, 15))
             
         screen.blit(pygame.font.SysFont(None, 28).render(f"v={v_target:.2f}, w={w_target:.2f}", True, (200, 200, 200)), (10, 45))
 
@@ -459,7 +536,7 @@ def main():
             screen.blit(state_text, (WIDTH//2 - state_text.get_width()//2, HEIGHT - 40))
 
         pygame.display.flip()
-        clock.tick(60)
+        clock.tick(30)
 
 if __name__ == "__main__":
     main()

@@ -8,10 +8,10 @@ from TurtleBotController.turtlebot import TurtleBotReal
 
 def buscar_camino_libre(lidar_points, radio_robot, direccion='front', margen_extra=0.10):
     if direccion == 'left':
-        angulos = [50, 63, 76, 90, 103, 116, 130]
+        angulos = [85, 90, 95]
         M = 5
     elif direccion == 'right':
-        angulos = [230, 243, 256, 270, 283, 296, 310]
+        angulos = [265, 270, 275]
         M = 5
     elif direccion == 'front':
         angulos = [-20, -13, -6, 0, 6, 13, 20]
@@ -61,20 +61,36 @@ def main():
     robot = TurtleBotReal("config.json")
     print("\nRobot listo. Comenzando...")
     
-    dt = 0.05  # 20 Hz
-    
     estado_actual = "EXPLORANDO"
     tiempo_estado = 0.0
     cooldown_senal = 0.0
     
+    # Tracker temporal para YOLO
+    tracker = {
+        'class': None,
+        'relative_angle': 0.0,
+        'distance': float('inf'),
+        'frames_lost': 999,
+        'max_frames': 15
+    }
+    
+    last_time = time.time()
+    
     try:
         while True:
-            lidar_scan = robot.get_lidar_scan()
+            current_time = time.time()
+            dt = current_time - last_time
+            last_time = current_time
+            
+            lidar_scan_raw = robot.get_lidar_scan()
             vision_dets = robot.get_vision_detections()
             
-            if len(lidar_scan) < 360:
-                time.sleep(dt)
+            if len(lidar_scan_raw) < 360:
+                time.sleep(0.05)
                 continue
+                
+            # Filtro de reflexiones del propio chasis (ruido < 0.18m)
+            lidar_scan = [d if d >= 0.18 else robot.lidar_max_range for d in lidar_scan_raw]
                 
             if cooldown_senal > 0:
                 cooldown_senal -= dt
@@ -82,9 +98,7 @@ def main():
             # Coordenadas cartesianas del LiDAR para raycasting
             lidar_points = []
             for i, dist_p in enumerate(lidar_scan):
-                # IMPORTANTE MUNDO REAL: Ignorar dist_p < 0.18 porque son reflexiones
-                # del propio plástico del robot (ruido del sensor) que bloquean el algoritmo.
-                if 0.18 < dist_p < robot.lidar_max_range:
+                if dist_p < robot.lidar_max_range:
                     lidar_points.append((dist_p * math.cos(math.radians(i)), dist_p * math.sin(math.radians(i))))
                     
             # Analizar el abanico frontal estricto
@@ -92,15 +106,29 @@ def main():
 
             v_target = 0.0
             w_target = 0.0
-            info_vision = ""
+            info_vision = "[NADA]"
 
             # ========================================================
-            # 1. ACTUALIZAR ESTADO SEGÚN YOLO (Transiciones)
+            # 1. ACTUALIZAR TRACKER Y ESTADO SEGÚN YOLO
             # ========================================================
-            if len(vision_dets) > 0 and cooldown_senal <= 0:
-                senal = sorted(vision_dets, key=lambda d: d['distance'])[0]
-                clase = senal['class']
-                dist = senal['distance']
+            if len(vision_dets) > 0:
+                # Tomamos la señal más centrada
+                senal = sorted(vision_dets, key=lambda d: abs(d['relative_angle']))[0]
+                
+                # Distancia extraída desde el LiDAR en la dirección de la señal
+                ang_grados = int(math.degrees(senal['relative_angle']))
+                dist_lidar = min([lidar_scan[(ang_grados + i) % 360] for i in range(-5, 6)])
+                
+                tracker['class'] = senal['class']
+                tracker['relative_angle'] = senal['relative_angle']
+                tracker['distance'] = dist_lidar
+                tracker['frames_lost'] = 0
+            else:
+                tracker['frames_lost'] += 1
+
+            if tracker['frames_lost'] < tracker['max_frames'] and cooldown_senal <= 0:
+                clase = tracker['class']
+                dist = tracker['distance']
                 
                 info_vision = f"[{clase.upper()}:{dist:.1f}m]"
                 
@@ -137,25 +165,41 @@ def main():
             elif estado_actual in ["BUSCANDO_IZQ", "BUSCANDO_DER"]:
                 v_target = max(0.1, min(0.3, (dist_frente_estricto - 0.4) * 0.8))
                 
-                # Tracking visual original (K=2.5)
-                if len(vision_dets) > 0:
-                    senal = sorted(vision_dets, key=lambda d: d['distance'])[0]
-                    w_target = senal['relative_angle'] * 2.5
+                # Centrar la flecha usando el tracker (sobrevive si se pierde por unos frames)
+                if tracker['frames_lost'] < tracker['max_frames']:
+                    w_target = tracker['relative_angle'] * 2.5
                 
                 # SIMULACIÓN (RAYCASTING) HACIA LOS LADOS
                 dir_search = 'left' if estado_actual == "BUSCANDO_IZQ" else 'right'
+                
                 espacio, _, _, _, _ = buscar_camino_libre(lidar_points, robot.radius, dir_search, 0.10)
+                if not espacio:
+                    espacio, _, _, _, _ = buscar_camino_libre(lidar_points, robot.radius, dir_search, 0.05)
+                if not espacio:
+                    espacio, _, _, _, _ = buscar_camino_libre(lidar_points, robot.radius, dir_search, 0.0)
                 
                 if espacio:
                     estado_actual = "GIRANDO_IZQ" if estado_actual == "BUSCANDO_IZQ" else "GIRANDO_DER"
                     tiempo_estado = 0.0
 
             elif estado_actual in ["GIRANDO_IZQ", "GIRANDO_DER"]:
-                v_target = max(0.1, min(0.3, (dist_frente_estricto - 0.4) * 0.8))
-                w_target = 2.0 if estado_actual == "GIRANDO_IZQ" else -2.0
+                # Curva suave tipo automóvil (rápida para no chocar con pared frontal)
+                v_target = 0.3
+                w_target = 1.5 if estado_actual == "GIRANDO_IZQ" else -1.5
                 tiempo_estado += dt
                 
-                if tiempo_estado >= 0.7: 
+                espacio_frente, _, _, _, _ = buscar_camino_libre(lidar_points, robot.radius, 'front', 0.10)
+                if not espacio_frente:
+                    espacio_frente, _, _, _, _ = buscar_camino_libre(lidar_points, robot.radius, 'front', 0.05)
+                if not espacio_frente:
+                    espacio_frente, _, _, _, _ = buscar_camino_libre(lidar_points, robot.radius, 'front', 0.0)
+                
+                # A 1.5 rad/s, 90 grados toman ~1.05s
+                if tiempo_estado >= 0.8 and espacio_frente: 
+                    estado_actual = "EXPLORANDO"
+                    cooldown_senal = 0.2
+                # Evitar girar infinitamente
+                elif tiempo_estado >= 2.0:
                     estado_actual = "EXPLORANDO"
                     cooldown_senal = 0.2
 
@@ -202,7 +246,8 @@ def main():
             # ========================================================
             # 4. LOGS EN UNA SOLA LÍNEA (con \r)
             # ========================================================
-            sys.stdout.write(f"\r[{estado_actual:<18}] {info_vision:<12} Frente: {dist_frente_estricto:.2f}m | v: {v_target:.2f} w: {w_target:>5.2f}  ")
+            min_lidar = min(lidar_scan)
+            sys.stdout.write(f"\r[{estado_actual:<18}] FPS:{1.0/max(0.001, dt):>4.1f} | Frente:{dist_frente_estricto:.2f}m Min:{min_lidar:.2f}m | v:{v_target:.2f} w:{w_target:>5.2f}  ")
             sys.stdout.flush()
 
             robot.move(v_target, w_target, dt)

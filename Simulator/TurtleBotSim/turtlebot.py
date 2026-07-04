@@ -18,7 +18,7 @@ class TurtleBotMock:
         self.lidar_max_range = 12.0 # Metros
         self.camera_fov = math.radians(60) # Campo de visión del YOLO
         self.camera_min_range = 0.1 # Rango mínimo ciego
-        self.camera_max_range = 3.0 # Límite físico de detección de YOLO (aumentado)
+        self.camera_max_range = 5.0 # Límite físico de detección de YOLO (aumentado)
         self.radius = 0.17 # Radio aproximado del robot (Create 3)
         
         # Simulación de imperfecciones de hardware real
@@ -79,19 +79,31 @@ class TurtleBotMock:
         """
         Retorna un array de 360 distancias usando el motor de raycasting.
         """
-        scan = np.zeros(self.lidar_resolution)
+        raw_scan = np.zeros(self.lidar_resolution)
         angle_increment = (2 * math.pi) / self.lidar_resolution
         import random
         
+        # El hardware real tiene su índice 0 apuntando hacia la DERECHA (-90 grados)
+        offset_hardware = -math.pi / 2
+        
         for i in range(self.lidar_resolution):
-            ray_angle = self.__theta + i * angle_increment
+            ray_angle = self.__theta + offset_hardware + i * angle_increment
             dist = cast_ray((self.__x, self.__y), ray_angle, self._world.obstacles, self.lidar_max_range)
             # Añadir ruido Gaussiano al LiDAR (~1.5cm de desviación típica)
             if dist < self.lidar_max_range:
                 dist += random.gauss(0, 0.015)
-            scan[i] = max(0.0, dist)
+                
+            # Simular reflexiones espurias del chasis (< 0.18m)
+            if random.random() < 0.02: # 2% de probabilidad
+                dist = random.uniform(0.05, 0.17)
+                
+            raw_scan[i] = max(0.0, dist)
             
-        return scan
+        # CORRECCIÓN DE CALIBRACIÓN DE HARDWARE (igual que en turtlebot.py real)
+        raw_scan_list = raw_scan.tolist()
+        corrected_scan = raw_scan_list[90:] + raw_scan_list[:90]
+            
+        return np.array(corrected_scan)
 
     def get_vision_detections(self):
         """
@@ -99,8 +111,13 @@ class TurtleBotMock:
         Retorna una lista de detecciones simulando lo que YOLO Nano vería y 
         fusionando la distancia del LiDAR.
         """
+        import random
         detections = []
         for signal in self._world.signals:
+            # Simular Falsos Negativos de YOLO (Accuracy ~95%)
+            if random.random() > 0.95:
+                continue
+                
             # 1. Transformación al marco de referencia del robot
             dx = signal['x'] - self.__x
             dy = signal['y'] - self.__y
@@ -125,10 +142,16 @@ class TurtleBotMock:
                 
                 # Si no hay obstáculo entre el robot y la señal (o el obstáculo está detrás de la señal)
                 if obstacle_dist >= true_dist - 0.1: # Tolerancia pequeña
+                    # Ruido en el bounding box (jitter de ángulo ~ 2 grados)
+                    noisy_angle = relative_angle + random.gauss(0, math.radians(2.0))
+                    
+                    # La distancia en el robot real se estima con el LiDAR o Pinhole de forma muy imprecisa.
+                    noisy_distance = true_dist + random.gauss(0, 0.1 * true_dist) # 10% error
+                    
                     detections.append({
                         'class': signal['type'],
-                        'distance': true_dist,
-                        'relative_angle': relative_angle
+                        'distance': noisy_distance,
+                        'relative_angle': noisy_angle
                     })
                 
         return detections
