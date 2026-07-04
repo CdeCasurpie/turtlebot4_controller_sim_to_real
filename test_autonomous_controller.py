@@ -37,6 +37,7 @@ def buscar_camino_libre(lidar_points, radio_robot, direccion='front', margen_ext
         M = 3 # Solo 3 pasos para escapar rápido
         
     margen = radio_robot + margen_extra
+    margen_sq = margen * margen
     paso_inicial = 0.3 
     distancia_paso = (2 * radio_robot) / M
     distancias_prueba = [paso_inicial + i * distancia_paso for i in range(M)]
@@ -54,7 +55,8 @@ def buscar_camino_libre(lidar_points, radio_robot, direccion='front', margen_ext
             
             choca = False
             for px, py in lidar_points:
-                if math.hypot(px - cx, py - cy) < margen:
+                # Optimización drástica: evitar math.hypot (raíz cuadrada)
+                if (px - cx)*(px - cx) + (py - cy)*(py - cy) < margen_sq:
                     choca = True
                     break
                     
