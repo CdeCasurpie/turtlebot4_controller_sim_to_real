@@ -364,11 +364,11 @@ def main():
                 # A 1.5 rad/s, 90 grados toman ~1.05 segundos.
                 if tiempo_estado >= 0.8 and espacio_frente: 
                     estado_actual = "EXPLORANDO"
-                    cooldown_senal = 0.2
+                    cooldown_senal = 1.5
                 # Evitar girar infinitamente
                 elif tiempo_estado >= 2.0:
                     estado_actual = "EXPLORANDO"
-                    cooldown_senal = 0.2
+                    cooldown_senal = 1.5
 
             elif estado_actual == "DETENIDO":
                 v_target = 0.0
@@ -420,6 +420,7 @@ def main():
                     # Si ya estamos alineados y el frente está libre, salimos de emergencia
                     if abs(ang_rel) < 15 and dist_frente_estricto > 0.4:
                         estado_actual = "EXPLORANDO" 
+                        v_target = c_min_v # Solución al bug de estancamiento (fuerza un pequeño empuje para escapar del loop)
                 else:
                     # Si no hay salida al frente, rotamos físicamente sobre nuestro eje
                     w_target = 3.0
