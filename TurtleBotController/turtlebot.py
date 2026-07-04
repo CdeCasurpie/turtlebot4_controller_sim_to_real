@@ -48,13 +48,14 @@ class _TurtleBotRosNode(Node):
 
 
 class TurtleBotReal:
-    def __init__(self, config_path="config.json"):
+    def __init__(self, config_path="config.json", use_yolo=True):
         """
         Inicializa el robot real conectándose a los tópicos de ROS 2 en background.
         """
         self.target_v = 0.0
         self.target_omega = 0.0
         self.is_running = True
+        self.use_yolo = use_yolo
         
         # Cargar configuración
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -76,25 +77,28 @@ class TurtleBotReal:
         domain_id = str(self.config['ros'].get('domain_id', 77))
         os.environ["ROS_DOMAIN_ID"] = domain_id
         
-        # Iniciar YOLO en la VPU (Myriad X) de la OAK-D vía DepthAI
-        vision_cfg = self.config['vision']
-        self.conf_threshold = vision_cfg.get('confidence_threshold', 0.85)
-        blob_path = os.path.join(base_dir, vision_cfg.get('vpu_blob_path', '../vpu_deployment/models/turtlebot_signals_v2.blob'))
-        classes_path = os.path.join(base_dir, vision_cfg.get('classes_path', '../yolonanov2/classes.txt'))
         self.vpu_detector = None
-        try:
-            self.vpu_detector = VpuYoloDetector(
-                blob_path=blob_path,
-                classes_path=classes_path,
-                num_classes=vision_cfg.get('num_classes', 4),
-                confidence_threshold=self.conf_threshold,
-                iou_threshold=vision_cfg.get('iou_threshold', 0.5),
-                fps=vision_cfg.get('fps', 15),
-                camera_fov_rad=self.camera_fov,
-            )
-            print(f"[VISION-VPU] Pipeline DepthAI iniciado: {blob_path}")
-        except Exception as e:
-            print(f"[VISION-VPU] Error al iniciar la VPU: {e}")
+        if self.use_yolo:
+            # Iniciar YOLO en la VPU (Myriad X) de la OAK-D vía DepthAI
+            vision_cfg = self.config['vision']
+            self.conf_threshold = vision_cfg.get('confidence_threshold', 0.85)
+            blob_path = os.path.join(base_dir, vision_cfg.get('vpu_blob_path', '../vpu_deployment/models/turtlebot_signals_v2.blob'))
+            classes_path = os.path.join(base_dir, vision_cfg.get('classes_path', '../yolonanov2/classes.txt'))
+            try:
+                self.vpu_detector = VpuYoloDetector(
+                    blob_path=blob_path,
+                    classes_path=classes_path,
+                    num_classes=vision_cfg.get('num_classes', 4),
+                    confidence_threshold=self.conf_threshold,
+                    iou_threshold=vision_cfg.get('iou_threshold', 0.5),
+                    fps=vision_cfg.get('fps', 15),
+                    camera_fov_rad=self.camera_fov,
+                )
+                print(f"[VISION-VPU] Pipeline DepthAI iniciado: {blob_path}")
+            except Exception as e:
+                print(f"[VISION-VPU] Error al iniciar la VPU: {e}")
+        else:
+            print("[VISION] YOLO y Cámara deshabilitados por bandera --no-yolo")
 
         # Iniciar ROS 2 en un hilo separado
         print(f"[TurtleBotController] Iniciando ROS 2 en el DOMAIN_ID: {domain_id}")

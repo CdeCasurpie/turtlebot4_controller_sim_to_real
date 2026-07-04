@@ -9,6 +9,8 @@ en `vpu_deployment/test_depthai_yolo.py` (modo `run_headless`).
 """
 import threading
 import time
+import numpy as np
+import cv2
 from pathlib import Path
 from typing import List, Dict
 
@@ -39,9 +41,7 @@ class VpuYoloDetector:
 
     def __init__(self, blob_path, classes_path, num_classes: int, confidence_threshold: float,
                  iou_threshold: float, fps: int, camera_fov_rad: float, real_sign_width_m: float = 0.20):
-        if dai is None or not hasattr(dai.node, "YoloDetectionNetwork"):
-            # dai.node.YoloDetectionNetwork/XLinkIn/XLinkOut no existen en depthai 3.x (API
-            # rediseñada); este pipeline necesita la rama 2.x.
+        if dai is None or not hasattr(dai.node, "NeuralNetwork"):
             instalado = "no instalado" if dai is None else f"instalado, versión {getattr(dai, '__version__', '?')} (rama incompatible)"
             raise RuntimeError(
                 f"'depthai' {instalado}. Se requiere la rama 2.x: pip install \"depthai<3\""
@@ -63,14 +63,11 @@ class VpuYoloDetector:
         cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
         cam_rgb.setFps(fps)
 
-        detection_nn = pipeline.create(dai.node.YoloDetectionNetwork)
+        self.conf_threshold = confidence_threshold
+        self.iou_threshold = iou_threshold
+
+        detection_nn = pipeline.create(dai.node.NeuralNetwork)
         detection_nn.setBlobPath(str(blob_path))
-        detection_nn.setConfidenceThreshold(confidence_threshold)
-        detection_nn.setNumClasses(num_classes)
-        detection_nn.setCoordinateSize(COORDINATE_SIZE)
-        detection_nn.setAnchors([])
-        detection_nn.setAnchorMasks({})
-        detection_nn.setIouThreshold(iou_threshold)
         detection_nn.setNumInferenceThreads(2)
         detection_nn.input.setBlocking(False)
         cam_rgb.preview.link(detection_nn.input)
@@ -98,22 +95,71 @@ class VpuYoloDetector:
                 break  # el dispositivo se cerró (ver close())
             if in_nn is None:
                 continue
-            parsed = [self._to_detection(d) for d in in_nn.detections]
+            
+            # YOLOv8: Output tensor shape is typically [1, 4+num_classes, 8400]
+            layer_names = in_nn.getAllLayerNames()
+            if not layer_names:
+                continue
+            data = np.array(in_nn.getLayerFp16(layer_names[0]))
+            
+            # Reshape a (4+classes, 8400) y transponer a (8400, 4+classes)
+            num_classes = len(self.class_names)
+            try:
+                data = data.reshape(4 + num_classes, -1).T
+            except ValueError:
+                continue
+                
+            scores = np.max(data[:, 4:], axis=1)
+            classes = np.argmax(data[:, 4:], axis=1)
+            
+            mask = scores > self.conf_threshold
+            filtered_data = data[mask]
+            filtered_scores = scores[mask]
+            filtered_classes = classes[mask]
+            
+            boxes = []
+            confidences = []
+            class_ids = []
+            
+            for i in range(len(filtered_data)):
+                cx, cy, w, h = filtered_data[i, 0:4]
+                # Convertir de pixeles absolutos (0-640) a normalizados (0-1) si es necesario.
+                # Si YOLOv8 da salida ya normalizada, esto será menor a 1 y no afectará si max() recorta, 
+                # pero usualmente YOLOv8 crudo da [0, imgsz]
+                if cx > 2.0 or w > 2.0:
+                    cx /= INPUT_SIZE[0]
+                    cy /= INPUT_SIZE[1]
+                    w /= INPUT_SIZE[0]
+                    h /= INPUT_SIZE[1]
+                
+                xmin = cx - w/2
+                ymin = cy - h/2
+                boxes.append([float(xmin), float(ymin), float(w), float(h)])
+                confidences.append(float(filtered_scores[i]))
+                class_ids.append(int(filtered_classes[i]))
+                
+            parsed = []
+            if len(boxes) > 0:
+                indices = cv2.dnn.NMSBoxes(boxes, confidences, self.conf_threshold, self.iou_threshold)
+                if len(indices) > 0:
+                    for i in indices.flatten():
+                        xmin, ymin, w, h = boxes[i]
+                        parsed.append(self._to_detection(xmin, xmin+w, class_ids[i]))
+                        
             with self._lock:
                 self._latest = parsed
 
-    def _to_detection(self, det) -> Dict:
-        # Bbox normalizado [0,1] -> mismo cálculo de ángulo/distancia que usaba
-        # la versión por CPU, pero con el ancho fijo del preview (640) como "foco".
-        cx = (det.xmin + det.xmax) / 2.0
+    def _to_detection(self, xmin, xmax, label_idx) -> Dict:
+        # Bbox normalizado [0,1]
+        cx = (xmin + xmax) / 2.0
         normalized_x = (cx - 0.5) * 2.0  # -1 (izq) a 1 (der)
         relative_angle = -normalized_x * (self.camera_fov / 2.0)
 
-        bbox_width_px = max((det.xmax - det.xmin) * INPUT_SIZE[0], 1.0)
+        bbox_width_px = max((xmax - xmin) * INPUT_SIZE[0], 1.0)
         focal_length = INPUT_SIZE[0]
         distance = (self.real_sign_width_m * focal_length) / bbox_width_px
 
-        label = self.class_names[det.label] if det.label < len(self.class_names) else str(det.label)
+        label = self.class_names[label_idx] if label_idx < len(self.class_names) else str(label_idx)
         return {'class': label, 'distance': distance, 'relative_angle': relative_angle}
 
     def get_detections(self) -> List[Dict]:

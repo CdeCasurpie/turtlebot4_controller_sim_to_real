@@ -1,5 +1,7 @@
-import pygame
 import sys
+use_ui = "--no-ui" not in sys.argv
+if use_ui:
+    import pygame
 import json
 import math
 import os
@@ -10,6 +12,7 @@ from Simulator.TurtleBotSim.turtlebot import TurtleBotMock
 import time
 
 use_simulator = "--simulator" in sys.argv
+use_yolo = "--no-yolo" not in sys.argv
 
 if not use_simulator:
     from TurtleBotController.turtlebot import TurtleBotReal
@@ -73,10 +76,14 @@ def buscar_camino_libre(lidar_points, radio_robot, direccion='front', margen_ext
 
 
 def main():
-    pygame.init()
-    screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("TurtleBot 4 - Navegación Definitiva Anti-Choques")
-    clock = pygame.time.Clock()
+    if use_ui:
+        pygame.init()
+        screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        pygame.display.set_caption("TurtleBot 4 - Navegación Definitiva Anti-Choques")
+        clock = pygame.time.Clock()
+    else:
+        screen = None
+        clock = None
 
     if use_simulator:
         world = World()
@@ -108,8 +115,9 @@ def main():
     tiempo_estado = 0.0
     cooldown_senal = 0.0
     choques = 0
+    history = []
     
-    # Tracker temporal para YOLO
+    last_log_time = 0.0  # Tracker temporal para YOLO
     tracker = {
         'class': None,
         'relative_angle': 0.0,
@@ -210,25 +218,29 @@ def main():
             dt = current_time - last_time
             last_time = current_time
             
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_l and use_simulator:
-                    view_mode = "robot" if view_mode == "global" else "global"
-                elif event.key == pygame.K_SPACE:
-                    paused = not paused
-                    if not paused and history_index < len(history) - 1:
-                        history = history[:history_index+1]
-                elif event.key == pygame.K_LEFT and paused:
-                    if history_index > 0:
-                        history_index -= 1
+        if use_ui:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_l and use_simulator:
+                        history_index = max(0, history_index - 1)
                         set_state(history[history_index])
-                elif event.key == pygame.K_RIGHT and paused:
-                    if history_index < len(history) - 1:
-                        history_index += 1
+                    elif event.key == pygame.K_SPACE:
+                        paused = not paused
+                        # Al pausar, nos situamos en el presente
+                        if paused:
+                            history_index = len(history) - 1
+                    elif event.key == pygame.K_LEFT and paused:
+                        history_index = max(0, history_index - 1)
+                        set_state(history[history_index])
+                    elif event.key == pygame.K_RIGHT and paused:
+                        history_index = min(len(history) - 1, history_index + 1)
                         set_state(history[history_index])
 
+        # ========================================================
+        # 1. PERCEPCIÓN (SIMULADA O REAL)
+        # ========================================================
         lidar_scan_raw = robot.get_lidar_scan()
         if len(lidar_scan_raw) < 360:
             if not use_simulator:
@@ -237,7 +249,10 @@ def main():
             
         # Filtrar reflexiones propias del chasis simulando el hardware real
         lidar_scan = [d if d >= 0.18 else robot.lidar_max_range for d in lidar_scan_raw]
-        vision_dets = robot.get_vision_detections()
+        if use_yolo:
+            vision_dets = robot.get_vision_detections()
+        else:
+            vision_dets = []
         
         # Pre-computar puntos x,y del lidar para que la función sea ultra rápida
         lidar_points = []
@@ -259,7 +274,7 @@ def main():
             dist_frente_estricto = min(lidar_scan[0:15] + lidar_scan[345:360])
 
             # ========================================================
-            # 1. ACTUALIZAR TRACKER Y ESTADO SEGÚN YOLO
+            # 2. ACTUALIZAR TRACKER Y ESTADO SEGÚN YOLO
             # ========================================================
             if len(vision_dets) > 0:
                 # Priorizar la señal que ya estamos trackeando si sigue visible para evitar flickering
@@ -314,7 +329,7 @@ def main():
                         estado_actual = "FINALIZADO"
 
             # ========================================================
-            # 2. LÓGICA DE CADA ESTADO
+            # 3. LÓGICA DE CADA ESTADO
             # ========================================================
             
             # Función local para evadir paredes con interpolación matemática muy suave
@@ -434,7 +449,7 @@ def main():
                 w_target = 0.0
 
             # ========================================================
-            # 3. ANTI-CHOQUES Y EVASIÓN (Giro estático hasta ruta libre)
+            # 4. ANTI-CHOQUES Y EVASIÓN (Giro estático hasta ruta libre)
             # ========================================================
             riesgo_inminente = False
             min_dist_frontal = float('inf')
@@ -486,7 +501,7 @@ def main():
                             w_target = 3.0
 
             # ========================================================
-            # 4. ACTUACIÓN FÍSICA Y GUARDADO
+            # 5. ACTUACIÓN FÍSICA Y GUARDADO
             # ========================================================
             hubo_choque = robot.move(v_target, w_target, dt)
             if hubo_choque:
@@ -525,8 +540,23 @@ def main():
                 _, _, intentos_render, render_distancias, render_margen = buscar_camino_libre(lidar_points, robot.radius, dir_search, 0.0)
 
         # ========================================================
-        # 5. RENDERIZADO VISUAL
+        # 6. DIBUJADO Y TELEMETRÍA (SI LA UI ESTÁ ACTIVA)
         # ========================================================
+        if not use_ui:
+            # Si no hay UI, limitamos la velocidad del bucle
+            time.sleep(1.0 / 30.0)
+            
+            # Loguear en consola 4 veces por segundo
+            if current_time - last_log_time > 0.25:
+                yolo_log = [f"[{d['class']} {d['distance']:.2f}m]" for d in vision_dets]
+                log_str = f"Estado: {estado_actual:<20} | v={v_target:.2f}, w={w_target:.2f} | YOLO: {' '.join(yolo_log) if yolo_log else 'Ninguna'}"
+                if cooldown_senal > 0:
+                    log_str += f" | (IGNORANDO: {cooldown_senal:.1f}s)"
+                print(log_str)
+                last_log_time = current_time
+            
+            continue
+            
         screen.fill((30, 30, 30))
         font = pygame.font.SysFont(None, 24)
         
