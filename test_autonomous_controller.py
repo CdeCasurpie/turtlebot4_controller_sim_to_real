@@ -435,7 +435,8 @@ def main():
             # ========================================================
             riesgo_inminente = False
             min_dist_frontal = float('inf')
-            for i in list(range(0, 45)) + list(range(315, 360)):
+            # Reducimos el cono de choque frontal a +/- 20 grados para no detectar paredes laterales
+            for i in list(range(0, 21)) + list(range(339, 360)):
                 if lidar_scan[i] < min_dist_frontal:
                     min_dist_frontal = lidar_scan[i]
             
