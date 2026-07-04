@@ -309,19 +309,21 @@ def main():
             if estado_actual == "EXPLORANDO":
                 v_target = max(c_min_v, min(c_max_v, (dist_frente_estricto - 0.4) * c_max_v))
                 
-                min_dist = min(lidar_scan)
-                min_angle = np.argmin(lidar_scan)
-                if min_angle > 180: min_angle -= 360
-
-                if min_dist < c_rad_amarillo:
-                    factor_giro = c_fac_rep_f if min_dist < c_rad_giro_f else c_fac_rep_s
-                    margen = c_rad_amarillo
-                    if min_angle >= 0:
-                        target = 90 + (margen - min_dist) * 80.0 
-                        w_target -= math.radians(target - min_angle) * factor_giro
-                    else:
-                        target = -90 - (margen - min_dist) * 80.0
-                        w_target -= math.radians(target - min_angle) * factor_giro
+                force_y = 0.0
+                for i, dist in enumerate(lidar_scan):
+                    if dist < c_rad_amarillo:
+                        ang = i if i <= 180 else i - 360
+                        # Ignorar puntos muy atrás que no importan para avanzar
+                        if abs(ang) < 135:
+                            factor = c_fac_rep_f if dist < c_rad_giro_f else c_fac_rep_s
+                            repulsion = ((c_rad_amarillo - dist) / c_rad_amarillo) * factor
+                            force_y -= math.sin(math.radians(ang)) * repulsion
+                            
+                # Multiplicador empírico para convertir la fuerza en velocidad angular (rad/s)
+                w_target = force_y * 2.5
+                
+                # Limitar el giro en exploración para que no dé volantazos exagerados
+                w_target = max(-1.5, min(1.5, w_target))
 
             elif estado_actual == "ACERCANDOSE_A_SENAL":
                 # Misma velocidad que explorando
