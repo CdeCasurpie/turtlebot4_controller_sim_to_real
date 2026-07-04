@@ -466,7 +466,8 @@ def main():
                     
                     # Si ya estamos alineados y el frente está libre, salimos de emergencia
                     if abs(ang_rel) < 15 and dist_frente_estricto > 0.4:
-                        estado_actual = "EXPLORANDO" 
+                        estado_actual = "EXPLORANDO"
+                        cooldown_senal = c_cool_post # Evitar volver a leer el cartel que nos metió en problemas
                         v_target = c_min_v # Solución al bug de estancamiento (fuerza un pequeño empuje para escapar del loop)
                 else:
                     # Si no hay salida al frente, rotamos físicamente sobre nuestro eje hacia donde fue el último giro
