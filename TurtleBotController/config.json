@@ -3,7 +3,6 @@
         "domain_id": 77,
         "cmd_vel_topic": "/cmd_vel",
         "scan_topic": "/scan",
-        "image_topic": "/oakd/rgb/preview/image_raw",
         "use_twist_stamped": true
     },
     "robot": {
@@ -13,8 +12,12 @@
         "lidar_max_range": 12.0
     },
     "vision": {
-        "yolo_model_path": "../yolonano/best.pt",
+        "vpu_blob_path": "../vpu_deployment/models/turtlebot_signals_v2.blob",
+        "classes_path": "../yolonanov2/classes.txt",
+        "num_classes": 4,
         "confidence_threshold": 0.85,
+        "iou_threshold": 0.5,
+        "fps": 15,
         "camera_fov_deg": 60.0
     }
 }

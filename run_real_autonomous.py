@@ -140,6 +140,8 @@ def main():
                     elif clase == 'stop' and dist <= 1.6:
                         estado_actual = "DETENIDO"
                         tiempo_estado = 3.0
+                    elif clase == 'finish' and dist <= 1.6:
+                        estado_actual = "FINALIZADO"
 
             # ========================================================
             # 2. LÓGICA DE CADA ESTADO (Misma matemática del simulador)
@@ -211,6 +213,11 @@ def main():
                     estado_actual = "EXPLORANDO"
                     cooldown_senal = 3.0
 
+            elif estado_actual == "FINALIZADO":
+                # Meta alcanzada: se queda detenido, sin volver a EXPLORANDO.
+                v_target = 0.0
+                w_target = 0.0
+
             # ========================================================
             # 3. ANTI-CHOQUES Y EVASIÓN DE EMERGENCIA
             # ========================================================
@@ -251,6 +258,10 @@ def main():
             sys.stdout.flush()
 
             robot.move(v_target, w_target, dt)
+
+            if estado_actual == "FINALIZADO":
+                print("\n\n¡Señal FINISH alcanzada! Deteniendo el robot y terminando el programa.")
+                break
 
     except KeyboardInterrupt:
         print("\n\nPrograma interrumpido por el usuario (Ctrl+C).")
