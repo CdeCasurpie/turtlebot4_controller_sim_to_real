@@ -1,4 +1,17 @@
 {
+    "_comentarios": {
+        "vision_reliable_dist": "Distancia (m) a la que YOLO es tan preciso que ya podemos confiar para empezar a doblar la esquina",
+        "stop_finish_dist": "Distancia (m) de reacción a la que el robot debe empezar a detenerse si ve un cartel de Stop o Finish",
+        "max_v_target_sim": "Velocidad lineal máxima en modo de exploración (m/s). Afecta qué tan rápido avanza cuando tiene vía libre",
+        "min_v_target_sim": "Velocidad lineal mínima (m/s). Útil para que nunca llegue a velocidad 0 a menos que sea emergencia",
+        "v_target_turn": "Velocidad lineal (m/s) que mantiene durante el giro a ciegas en la esquina",
+        "w_target_turn": "Velocidad angular (rad/s) del giro programado en la esquina (a ciegas)",
+        "w_target_approach": "Qué tan brusco gira (rad/s) para acercarse y mantener centrada la señal en cámara",
+        "evasion_frontal_dist": "Distancia frontal mínima (m) al LiDAR antes de frenar de emergencia y buscar salida",
+        "evasion_general_dist": "Distancia mínima de roce lateral (m) (360 grados). Si un muro está más cerca que esto, salta emergencia",
+        "yolo_error_max_prob": "Simulador: Probabilidad máxima de que YOLO falle a distancias largas (1.0 = siempre falla si está muy lejos)",
+        "min_consecutive_frames": "Frames consecutivos (ej. a 30fps) que debe detectar LA MISMA SEÑAL para empezar a acercarse"
+    },
     "vision_reliable_dist": 0.45,
     "stop_finish_dist": 1.6,
     "max_v_target_sim": 0.8,
@@ -8,5 +21,6 @@
     "w_target_approach": 2.5,
     "evasion_frontal_dist": 0.35,
     "evasion_general_dist": 0.20,
-    "yolo_error_max_prob": 0.95
+    "yolo_error_max_prob": 0.95,
+    "min_consecutive_frames": 4
 }

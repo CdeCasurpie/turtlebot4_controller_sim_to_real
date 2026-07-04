@@ -111,7 +111,8 @@ def main():
         'relative_angle': 0.0,
         'distance': float('inf'),
         'frames_lost': 999,
-        'max_frames': 90  # 3 segundos a 30 FPS
+        'max_frames': 90,  # 3 segundos a 30 FPS
+        'consecutive_frames': 0
     }
     
     v_target = 0.0
@@ -187,6 +188,7 @@ def main():
         c_w_appr = sim_config.get("w_target_approach", 2.5)
         c_evas_f = sim_config.get("evasion_frontal_dist", 0.35)
         c_evas_g = sim_config.get("evasion_general_dist", 0.20)
+        c_min_frames = sim_config.get("min_consecutive_frames", 4)
 
         if not use_simulator:
             current_time = time.time()
@@ -248,6 +250,11 @@ def main():
                 # Tomamos la señal más centrada
                 senal = sorted(vision_dets, key=lambda d: abs(d['relative_angle']))[0]
                 
+                if tracker['class'] == senal['class']:
+                    tracker['consecutive_frames'] += 1
+                else:
+                    tracker['consecutive_frames'] = 1
+                
                 # Distancia extraída desde el LiDAR en la dirección de la señal
                 ang_grados = int(math.degrees(senal['relative_angle']))
                 dist_lidar = min([lidar_scan[(ang_grados + i) % 360] for i in range(-5, 6)])
@@ -258,10 +265,12 @@ def main():
                 tracker['frames_lost'] = 0
             else:
                 tracker['frames_lost'] += 1
-                if estado_actual == "ACERCANDOSE_A_SENAL" and tracker['frames_lost'] >= tracker['max_frames']:
-                    estado_actual = "EXPLORANDO"
+                if tracker['frames_lost'] >= tracker['max_frames']:
+                    tracker['consecutive_frames'] = 0
+                    if estado_actual == "ACERCANDOSE_A_SENAL":
+                        estado_actual = "EXPLORANDO"
 
-            if tracker['frames_lost'] < tracker['max_frames'] and cooldown_senal <= 0:
+            if tracker['frames_lost'] < tracker['max_frames'] and cooldown_senal <= 0 and tracker['consecutive_frames'] >= c_min_frames:
                 clase = tracker['class']
                 dist = tracker['distance']
                 
