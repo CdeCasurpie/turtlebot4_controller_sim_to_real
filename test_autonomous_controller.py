@@ -307,16 +307,31 @@ def main():
             # 2. LÓGICA DE CADA ESTADO
             # ========================================================
             
-            # Función local para evadir paredes (centrado de pasillos)
+            # Función local para evadir paredes con interpolación matemática muy suave
             def calcular_repulsion(scan, rad_amarillo, rad_fuerte, fac_suave, fac_fuerte):
                 min_izq = min(scan[0:180])
                 min_der = min(scan[180:360])
-                f_izq = 0.0
-                f_der = 0.0
-                if min_izq < rad_amarillo:
-                    f_izq = ((rad_amarillo - min_izq) / rad_amarillo) * (fac_fuerte if min_izq < rad_fuerte else fac_suave)
-                if min_der < rad_amarillo:
-                    f_der = ((rad_amarillo - min_der) / rad_amarillo) * (fac_fuerte if min_der < rad_fuerte else fac_suave)
+                
+                def calcular_fuerza(dist):
+                    if dist >= rad_amarillo:
+                        return 0.0
+                    
+                    # Proporción base lineal (0 en rad_amarillo, 1 en el centro)
+                    intensidad = (rad_amarillo - dist) / rad_amarillo
+                    
+                    if dist <= rad_fuerte:
+                        # Sube exponencialmente si está a punto de chocar
+                        sobre_paso = (rad_fuerte - dist) / rad_fuerte
+                        mult = fac_fuerte + (sobre_paso ** 2) * 5.0
+                    else:
+                        # Interpolación 100% suave entre suave y fuerte para pasillos normales
+                        ratio = (rad_amarillo - dist) / (rad_amarillo - rad_fuerte)
+                        mult = fac_suave + ratio * (fac_fuerte - fac_suave)
+                        
+                    return intensidad * mult
+
+                f_izq = calcular_fuerza(min_izq)
+                f_der = calcular_fuerza(min_der)
                 return (f_der - f_izq)
 
             if estado_actual == "EXPLORANDO":
