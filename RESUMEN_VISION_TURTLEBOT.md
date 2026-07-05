@@ -1,84 +1,50 @@
-# Registro de Experimentos de Visión - TurtleBot 4 🐢👁️
+# Registro Cronológico de Experimentos de Visión - TurtleBot 4 🐢👁️
 
-Este documento es un registro detallado de **TODO** lo que se intentó, los problemas que enfrentamos y las soluciones que implementamos para lograr que el TurtleBot 4 viera las señales direccionales de forma autónoma.
-
----
-
-## 1. El Problema Inicial: Modelo Personalizado YOLOv8
-Entrenaste un modelo YOLOv8 Nano (`turtlebot_signals_v2_best.pt`) para detectar 4 clases:
-- `left`
-- `right`
-- `stop`
-- `finish`
-
-El reto era **ejecutar este modelo dentro de la Raspberry Pi 4** del TurtleBot, la cual tiene recursos computacionales muy limitados, usando una cámara avanzada **OAK-D Lite**.
+Este documento reconstruye de principio a fin todos los pasos, comandos, dolores de cabeza y victorias técnicas que tuvimos a lo largo del proyecto intentando dotar al TurtleBot 4 de la capacidad de leer señales. 
 
 ---
 
-## 2. Intento 1: Uso del Chip VPU (Myriad X) de la OAK-D
-**El objetivo:** Convertir el modelo `.pt` a un formato `.blob` para que el chip de IA interno de la cámara OAK-D hiciera todo el trabajo matemático (VPU), liberando al pobre procesador de la Raspberry Pi.
+## 1. La Odisea de YOLOv8 y la VPU (Myriad X)
+Todo comenzó con un modelo personalizado YOLOv8 Nano entrenado para 4 clases: `left`, `right`, `stop`, `finish`. Queríamos que el TurtleBot imprimiera qué flechas veía, hiciera tracking y girara a verlas.
 
-**Lo que hicimos:**
-1. Renombramos temporalmente el modelo (por problemas de codificación SSH con la letra "ñ") a `custom_model.pt`.
-2. Lo exportamos a ONNX y luego lo compilamos a `.blob` usando `blobconverter`.
-3. Configuramos la API de `depthai` para inyectar este `.blob` directamente a la cámara.
+1. **Problema con la "Ñ":** Intentamos subir el modelo original (`turtlebot_signals_v2_best_oño.pt`). El servidor de compilación colapsó por el carácter "ñ", así que lo renombramos a `custom_model.pt`.
+2. **Conversión a Blob:** Usamos `blobconverter` para pasarlo a formato `.blob` e inyectarlo en el chip VPU de la cámara OAK-D Lite.
+3. **El nodo DepthAI falló:** El nodo `YoloDetectionNetwork` nativo de la cámara no soportaba la arquitectura de YOLOv8. 
+4. **Solución manual:** Tuvimos que crear `vpu_vision.py` con una red neuronal plana (`dai.node.NeuralNetwork`) y parsear los tensores FP16 manualmente usando Numpy y `cv2.dnn.NMSBoxes`.
+5. **Resultado:** El modelo compilado arrojaba "falsos positivos" horribles. Constantemente veía la señal "left" incluso cuando no había nada enfrente de él. La conversión a FP16 arruinó la precisión del modelo original.
 
-**El Resultado y Problemas:**
-- ❌ **Falla de Parsing (YoloDetectionNetwork):** El nodo nativo de DepthAI para YOLO no era compatible con la arquitectura de salida de YOLOv8.
-- 🛠️ **Solución:** Tuvimos que crear un decodificador manual de tensores FP16 usando Numpy en `vpu_vision.py` (`np.max`, NMS, etc).
-- ❌ **Falsos Positivos:** El modelo en VPU empezó a detectar fantasmas (detectaba "left" constantemente). Esto ocurrió probablemente por pérdida de precisión al comprimir a FP16 o un error en la decodificación manual de las cajas delimitadoras.
+## 2. El Secuestro de la Cámara y el X11
+Entre pruebas, la cámara OAK-D se negaba a inicializar arrojando el error: `RuntimeError: Failed to connect to device, error message: X_LINK_DEVICE_ALREADY_IN_USE`.
 
----
+1. **La causa:** Al prender el TurtleBot, los nodos internos de ROS (`oakd_container` y `component_container`) inician de fondo y toman el control exclusivo del USB.
+2. **Solución:** Creamos una regla en el `Makefile` (`make stop_cam`) para aniquilar los contenedores de ROS antes de hacer pruebas de visión. (También tuvimos un caso donde un script de python atascado, el PID 9927, secuestró el puerto y tuvimos que matarlo con `kill -9`).
+3. **El problema visual (X11):** Para depurar qué estaba viendo la cámara, enviamos el video a la laptop usando SSH (X11 Forwarding). Esto causó un cuello de botella en la red tan masivo que el video iba a menos de 1 FPS y pensamos que el modelo estaba fallando. Cuando quitamos la UI (`cv2.imshow`), recuperamos la velocidad.
 
-## 3. Problema Crítico: `X_LINK_DEVICE_ALREADY_IN_USE`
-Durante nuestras pruebas con la cámara, empezamos a recibir este error fatal de DepthAI.
+## 3. El Salto a CPU (PyTorch puro)
+Debido a que el `.blob` daba falsos positivos, el usuario (César) dijo: *"y si lo hacemos defrente en cpu¿ y ya no como blob¿... no imorta ya, con los hilos que tenga o aprovechando cada cosa... pero quiero usarlo ya con el oak"*.
 
-**La causa:**
-Los contenedores de ROS 2 (`oakd_container` y `component_container`) que controlan el robot se inician automáticamente de fondo y se adueñan del puerto USB de la cámara.
+1. Implementamos `ultralytics` para correr el modelo original `.pt` usando la CPU de la Raspberry Pi 4.
+2. **Problema:** En la laptop (Intel i7) el `.pt` volaba, pero en la Raspberry Pi iba terriblemente lento (más de 1 segundo por frame).
+3. **Solución:** Modificamos la tubería para que capture la imagen a 640x640 pero la reduzca drásticamente a **320x320** justo antes de la inferencia. Esto multiplicó por 4 la velocidad en la CPU, haciéndolo finalmente viable.
 
-**La Solución:**
-Creamos un comando en tu `Makefile` para matar a los secuestradores antes de hacer pruebas de visión:
-```bash
-make stop_cam
-```
-*(O manualmente: `pkill -f oakd_container ; pkill -f component_container`)*
+## 4. El Pivot Definitivo: Códigos QR (WeChat Engine)
+Tras luchar con la imprecisión y pesadez de YOLO, el usuario propuso una alternativa magistral: usar un lector de códigos QR basado en el motor de WeChat.
 
----
+1. **Adaptación de la OAK-D:** El script original usaba `cv2.VideoCapture(0)`, pero eso casi nunca funciona con la OAK-D. Adaptamos el script (`qr_detector.py`) para usar la librería `depthai` y jalar el flujo RGB directamente.
+2. **Falta de dependencias:** Faltaba el módulo `cv2.wechat_qrcode_WeChatQRCode`.
+3. **Solución:** Entramos al entorno virtual del robot (`~/venv`) e instalamos el paquete pesado `opencv-contrib-python`.
+4. **Resultado:** El escáner funcionó maravillosamente sin ventanas gráficas y reportando a la consola a la velocidad de la luz.
 
-## 4. Intento 2: Inferencia en CPU Pura (PyTorch)
-Ante los problemas matemáticos del VPU, decidimos volver a lo seguro: usar tu modelo original `.pt` ejecutado por la CPU de la Raspberry Pi usando la librería oficial `ultralytics`.
-
-**El Resultado y Problemas:**
-- ✅ **Precisión perfecta:** Ya no había fantasmas, detectaba todo correctamente.
-- ❌ **Lag Extremo:** La Raspberry Pi tardaba muchísimo en procesar un frame (iba casi a 1 FPS), haciendo imposible usarlo en tiempo real. Adicionalmente, tener una ventana (`cv2.imshow`) abierta enviando video por SSH (X11) asfixiaba aún más la red.
-
-**La Solución Híbrida (Optimización):**
-Para salvar la CPU, modificamos `vpu_vision.py` para:
-1. Apagar todas las ventanas visuales.
-2. Extraer el frame RGB usando la OAK-D y **reducir su tamaño a 320x320 píxeles** (`cv2.resize(frame, (320, 320))`) justo antes de dárselo a YOLO.
-3. Esto aceleró la detección X4 veces, permitiendo un uso decente en el robot real.
+## 5. Otros Arreglos en el Camino
+* Reparamos un `IndentationError` en la línea 200 de `turtlebot.py` que impedía correr el controlador autónomo cuando el flag `--no-yolo` estaba activado.
+* Respaldamos todo el código (incluyendo modificaciones directas hechas por SSH) localmente en la laptop y lo subimos a la rama de Git `experimental-vision`.
 
 ---
 
-## 5. El Pivot Final: El Detector de Códigos QR (WeChat Engine)
-Ante las dificultades de YOLO, sugeriste usar una alternativa hiperrobusta: códigos QR usando el motor avanzado de WeChat de OpenCV.
+## 6. ¿QUÉ FALTA POR HACER? (TO-DO)
+Actualmente el proyecto está en un estado híbrido estable. Para completar el ciclo autónomo, quedan los siguientes pasos pendientes:
 
-**Lo que hicimos:**
-1. Arreglamos un `IndentationError` en `turtlebot.py` (Línea 200) que impedía correr el robot con el flag `--no-yolo`.
-2. Creamos `qr_detector.py`. En vez de usar `cv2.VideoCapture(0)` (lo cual falla con la OAK-D por no ser una simple webcam USB PnP), lo conectamos a `depthai` para extraer el video crudo y pasarlo por WeChat.
-3. ❌ **Error de dependencias:** Faltaba el módulo contrib.
-4. ✅ **Solución:** Entramos al TurtleBot e instalamos `opencv-contrib-python` dentro del entorno virtual, reviviendo el escáner exitosamente.
-
----
-
-## 6. Estado Actual del Repositorio Local
-Justo antes de que el TurtleBot se desconectara, todo el código (incluyendo scripts que creamos allá) fue salvado localmente en tu laptop y añadido a un nuevo branch en Git.
-
-**Archivos añadidos/modificados en local:**
-- `TurtleBotController/vpu_vision.py`: Contiene la lógica híbrida CPU súper rápida para YOLO a 320x320.
-- `TurtleBotController/turtlebot.py`: Código reparado (IndentationError resuelto) listo para funcionar con y sin YOLO.
-- `TurtleBotController/config.json`: Umbral de confianza adaptado.
-- `qr_detector.py`: El súper script escáner de QR integrado con OAK-D.
-- `test_vision.py`: Recreado localmente para que puedas probar la visión sin mover al robot.
-
-Todo esto está empaquetado y comiteado en tu rama **`experimental-vision`**.
+- [ ] **Integrar QR al Controlador Autónomo:** Mudar la lógica de `qr_detector.py` hacia dentro de `turtlebot.py` (posiblemente renombrando `VpuYoloDetector` a `QRVisionDetector`) para que la clase `TurtleBotReal` pueda consumir las direcciones de los QR.
+- [ ] **Mapear las respuestas del QR:** Asegurar que cuando el lector WeChat decodifique el string del QR (ej. "LEFT"), el diccionario de salida del robot coincida con lo que espera `test_autonomous_controller.py` (`{'class': 'left', 'distance': ..., 'relative_angle': ...}`).
+- [ ] **Calcular distancia al QR:** Dado que un QR no da profundidad per se con una sola cámara RGB, usar la distancia focal de la cámara (FOV) y el ancho en píxeles del QR detectado para estimar a qué distancia está el cartel, y calcular su ángulo relativo para que el robot sepa cuánto debe girar para centrarlo.
+- [ ] **Pruebas de Campo Finales:** Encender el controlador, poner carteles QR físicos, y verificar que el algoritmo de navegación pase del estado `EXPLORANDO` a `ACERCANDOSE_A_SENAL`, evada obstáculos, y luego ejecute `GIRANDO_IZQ` o `DETENIDO` con éxito.
