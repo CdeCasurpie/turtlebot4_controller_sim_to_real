@@ -82,11 +82,11 @@ class TurtleBotReal:
             # Iniciar YOLO en la VPU (Myriad X) de la OAK-D vía DepthAI
             vision_cfg = self.config['vision']
             self.conf_threshold = vision_cfg.get('confidence_threshold', 0.85)
-            blob_path = os.path.join(base_dir, vision_cfg.get('vpu_blob_path', '../vpu_deployment/models/turtlebot_signals_v2.blob'))
+            pt_path = os.path.join(base_dir, '../yolonanov2/turtlebot_signals_v2_best.pt')
             classes_path = os.path.join(base_dir, vision_cfg.get('classes_path', '../yolonanov2/classes.txt'))
             try:
                 self.vpu_detector = VpuYoloDetector(
-                    blob_path=blob_path,
+                    pt_path=pt_path,
                     classes_path=classes_path,
                     num_classes=vision_cfg.get('num_classes', 4),
                     confidence_threshold=self.conf_threshold,
@@ -94,9 +94,9 @@ class TurtleBotReal:
                     fps=vision_cfg.get('fps', 15),
                     camera_fov_rad=self.camera_fov,
                 )
-                print(f"[VISION-VPU] Pipeline DepthAI iniciado: {blob_path}")
+                print(f"[VISION-CPU] Pipeline DepthAI+CPU iniciado: {pt_path}")
             except Exception as e:
-                print(f"[VISION-VPU] Error al iniciar la VPU: {e}")
+                print(f"[VISION-CPU] Error al iniciar DepthAI+CPU: {e}")
         else:
             print("[VISION] YOLO y Cámara deshabilitados por bandera --no-yolo")
 

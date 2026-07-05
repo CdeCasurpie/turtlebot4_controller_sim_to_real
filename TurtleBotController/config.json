@@ -15,7 +15,7 @@
         "vpu_blob_path": "../vpu_deployment/models/turtlebot_signals_v2.blob",
         "classes_path": "../yolonanov2/classes.txt",
         "num_classes": 4,
-        "confidence_threshold": 0.85,
+        "confidence_threshold": 0.50,
         "iou_threshold": 0.5,
         "fps": 15,
         "camera_fov_deg": 60.0
