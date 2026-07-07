@@ -224,8 +224,7 @@ def main():
                     running = False
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_l and use_simulator:
-                        history_index = max(0, history_index - 1)
-                        set_state(history[history_index])
+                        view_mode = "robot" if view_mode == "global" else "global"
                     elif event.key == pygame.K_SPACE:
                         paused = not paused
                         # Al pausar, nos situamos en el presente
@@ -557,7 +556,7 @@ def main():
             
             continue
             
-        screen.fill((30, 30, 30))
+        screen.fill((10, 15, 10))
         font = pygame.font.SysFont(None, 24)
         
         if use_simulator:
@@ -566,7 +565,7 @@ def main():
         if view_mode == "global" and use_simulator:
             # --- RENDER GLOBAL (Original) ---
             for p1, p2 in world.obstacles:
-                pygame.draw.line(screen, (200, 200, 200), to_screen(*p1), to_screen(*p2), 2)
+                pygame.draw.line(screen, (100, 150, 100), to_screen(*p1), to_screen(*p2), 2)
 
             for sig in world.signals:
                 sx, sy = to_screen(sig['x'], sig['y'])
@@ -580,7 +579,7 @@ def main():
             for intento in intentos_render:
                 ang_c = intento['angulo']
                 es_valido = intento['valido']
-                color_circulo = (0, 255, 255) if es_valido else (255, 0, 0)
+                color_circulo = (50, 200, 150) if es_valido else (200, 50, 50)
                 
                 for d_c in render_distancias:
                     cx = rx + d_c * math.cos(rtheta + math.radians(ang_c))
@@ -622,9 +621,9 @@ def main():
             # Anillo amarillo claro (Límite de giro suave/exploración)
             pygame.draw.circle(screen, (255, 255, 0), (rsx, rsy), int(c_rad_amarillo * SCALE), 1)
             
-            pygame.draw.circle(screen, (50, 255, 100), (rsx, rsy), robot_px_radius)
+            pygame.draw.circle(screen, (60, 220, 60), (rsx, rsy), robot_px_radius)
             hx, hy = to_screen(rx + robot.radius * math.cos(rtheta), ry + robot.radius * math.sin(rtheta))
-            pygame.draw.line(screen, (255, 255, 255), (rsx, rsy), (hx, hy), 3)
+            pygame.draw.line(screen, (10, 15, 10), (rsx, rsy), (hx, hy), 3)
 
         else:
             # --- RENDER VISTA ROBOT (Local) ---
@@ -654,14 +653,14 @@ def main():
             fl_y = int(rsy - 2 * math.sin(fov_l) * SCALE)
             fr_x = int(rsx + 2 * math.cos(fov_r) * SCALE)
             fr_y = int(rsy - 2 * math.sin(fov_r) * SCALE)
-            pygame.draw.line(screen, (0, 100, 255), (rsx, rsy), (fl_x, fl_y), 1)
-            pygame.draw.line(screen, (0, 100, 255), (rsx, rsy), (fr_x, fr_y), 1)
+            pygame.draw.line(screen, (50, 150, 50), (rsx, rsy), (fl_x, fl_y), 1)
+            pygame.draw.line(screen, (50, 150, 50), (rsx, rsy), (fr_x, fr_y), 1)
 
-            # Dibujar Robot
+            # Dibujar Robot (Tono verde tortuga)
             robot_px_radius = int(robot.radius * SCALE)
-            pygame.draw.circle(screen, (50, 255, 100), (rsx, rsy), robot_px_radius)
+            pygame.draw.circle(screen, (60, 220, 60), (rsx, rsy), robot_px_radius)
             hx, hy = rsx, rsy - robot_px_radius # Frente hacia arriba
-            pygame.draw.line(screen, (255, 255, 255), (rsx, rsy), (hx, hy), 3)
+            pygame.draw.line(screen, (10, 15, 10), (rsx, rsy), (hx, hy), 3)
             
             # Dibujar señales detectadas por YOLO
             for det in vision_dets:
@@ -678,19 +677,19 @@ def main():
 
         fps = clock.get_fps()
         mode_text = f"SIMULADOR (FPS: {fps:.1f})" if use_simulator else f"ROBOT REAL (FPS: {1.0/max(0.001, dt):.1f})"
-        screen.blit(pygame.font.SysFont(None, 36).render(f"[{mode_text}] Algoritmo: {estado_actual}", True, (255, 255, 255)), (10, 10))
+        screen.blit(pygame.font.SysFont(None, 36).render(f"[{mode_text}] Algoritmo: {estado_actual}", True, (60, 220, 60)), (10, 10))
         if cooldown_senal > 0:
             screen.blit(pygame.font.SysFont(None, 24).render(f"(Ignorando señales por: {cooldown_senal:.1f}s para evitar bucle)", True, (255, 200, 0)), (400, 15))
             
-        screen.blit(pygame.font.SysFont(None, 28).render(f"v={v_target:.2f}, w={w_target:.2f}", True, (200, 200, 200)), (10, 45))
+        screen.blit(pygame.font.SysFont(None, 28).render(f"v={v_target:.2f}, w={w_target:.2f}", True, (150, 200, 150)), (10, 45))
 
-        color_choque = (255, 100, 100) if choques > 0 else (100, 255, 100)
+        color_choque = (255, 100, 100) if choques > 0 else (60, 220, 60)
         screen.blit(pygame.font.SysFont(None, 28).render(f"Choques: {choques}", True, color_choque), (10, 75))
 
         y_offset = 105
         for det in vision_dets:
             text = f"YOLO Ve: '{det['class']}' a {det['distance']:.2f}m (Ang: {math.degrees(det['relative_angle']):.1f}º)"
-            img = font.render(text, True, (255, 100, 100))
+            img = font.render(text, True, (200, 255, 200))
             screen.blit(img, (10, y_offset))
             y_offset += 25
 
