@@ -21,6 +21,7 @@ run:
 	@echo ""
 	@echo "  make status                      Ver WiFi, IP, Bateria y Recursos"
 	@echo "  make stop                        Matar ambos procesos"
+	@echo "  make stop_cam                    Forzar apagado de la cámara ROS (para YOLO/QRs)"
 	@echo "  make clean                       Borrar scripts antiguos"
 	@echo "  make info                        Ver configuracion actual"
 	@echo ""
@@ -80,9 +81,11 @@ ros:
 # ---- Paso 1.5: Liberar Cámara para Python ----
 stop_cam:
 	@echo "Liberando cámara OAK-D de ROS 2..."
+	@-sudo systemctl stop oakd || true
+	@-sudo systemctl stop turtlebot4 || true
 	@-pkill -f oakd_container
 	@-pkill -f component_container
-	@echo "¡Cámara liberada con éxito para usar con YOLO!"
+	@echo "¡Cámara liberada con éxito para usar con YOLO/QR!"
 
 # ---- Paso 2: turtle_bridge ----
 bridge:

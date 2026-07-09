@@ -186,7 +186,7 @@ def main():
         )
         dt = 1 / 30.0
     else:
-        robot = TurtleBotReal("config.json")
+        robot = TurtleBotReal("config.json", use_yolo=use_yolo)
         world = None
         dt = 0.05
         
