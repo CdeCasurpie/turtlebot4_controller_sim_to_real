@@ -986,6 +986,33 @@
             "type": "finish",
             "x": 6.127073170731707,
             "y": -2.763658536585366
+        },
+        {
+            "type": "right",
+            "x": 5.024255442670537,
+            "y": 4.986798258345428
+        }
+    ],
+    "qrs": [
+        {
+            "content": "CHECKPOINT_INICIO_OK",
+            "x": 1.5,
+            "y": 0.0
+        },
+        {
+            "content": "INFO: ZONA_CURVAS_PELIGROSAS",
+            "x": -2.0,
+            "y": 3.0
+        },
+        {
+            "content": "ID_COMPETIDOR_VALIDADO",
+            "x": 4.0,
+            "y": 4.0
+        },
+        {
+            "content": "ZONA_FINAL_APROXIMANDO",
+            "x": 5.5,
+            "y": -2.0
         }
     ],
     "robot_start": {

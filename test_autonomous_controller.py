@@ -6,10 +6,17 @@ import json
 import math
 import os
 import numpy as np
+import time
+import threading
+import cv2
+
+try:
+    import depthai as dai
+except ImportError:
+    dai = None
 
 from Simulator.WorldSim.world import World
 from Simulator.TurtleBotSim.turtlebot import TurtleBotMock
-import time
 
 use_simulator = "--simulator" in sys.argv
 use_yolo = "--no-yolo" not in sys.argv
@@ -21,11 +28,87 @@ SCALE = 50.0
 WIDTH, HEIGHT = 800, 600
 OFFSET_X, OFFSET_Y = WIDTH // 2, HEIGHT // 2
 
+# ========================================================
+# HILO EN SEGUNDO PLANO PARA EL ESCÁNER QR
+# ========================================================
+class QRScannerThread(threading.Thread):
+    def __init__(self):
+        super().__init__()
+        self.daemon = True 
+        self.running = True
+        
+        if dai is None:
+            print("[QR Thread] Error: depthai no está instalado.")
+            self.detector = None
+            return
+
+        try:
+            self.detector = cv2.wechat_qrcode_WeChatQRCode()
+            print("[QR Thread] Motor WeChatQRCode inicializado correctamente.")
+        except Exception as e:
+            print(f"[QR Thread] Error al inicializar WeChatQRCode: {e}")
+            self.detector = None
+
+    def run(self):
+        if dai is None or self.detector is None:
+            return
+
+        pipeline = dai.Pipeline()
+        cam_rgb = pipeline.create(dai.node.ColorCamera)
+        cam_rgb.setPreviewSize(640, 480)
+        cam_rgb.setInterleaved(False)
+        cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
+        cam_rgb.setFps(15)
+
+        xout_rgb = pipeline.create(dai.node.XLinkOut)
+        xout_rgb.setStreamName("rgb")
+        cam_rgb.preview.link(xout_rgb.input)
+
+        contador_qr = 0
+        ultimo_tiempo = 0
+        qr_en_pantalla = False
+
+        try:
+            with dai.Device(pipeline) as device:
+                q_rgb = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
+                
+                while self.running:
+                    in_rgb = q_rgb.get()
+                    if in_rgb is None:
+                        continue
+                        
+                    frame = in_rgb.getCvFrame()
+                    datos, puntos = self.detector.detectAndDecode(frame)
+                    tiempo_actual = time.time()
+
+                    if puntos is not None and len(puntos) > 0 and datos and datos[0] != "":
+                        if not qr_en_pantalla:
+                            contador_qr += 1
+                            print(f"\n---> [NUEVO QR DETECTADO] #{contador_qr} | Contenido: {datos[0]} <---")
+                            qr_en_pantalla = True
+                        
+                        ultimo_tiempo = tiempo_actual
+                    else:
+                        qr_en_pantalla = False
+                        if contador_qr > 0 and (tiempo_actual - ultimo_tiempo) >= 5.0:
+                            contador_qr = 0
+                            
+        except RuntimeError as e:
+            print(f"[QR Thread] Conflicto de cámara (probablemente en uso por YOLO): {e}")
+        except Exception as e:
+            print(f"[QR Thread] Error en el pipeline del OAK-D: {e}")
+
+    def stop(self):
+        self.running = False
+
+
+# ========================================================
+# FUNCIONES AUXILIARES
+# ========================================================
 def to_screen(x, y):
     return int(OFFSET_X + x * SCALE), int(OFFSET_Y - y * SCALE)
 
 def buscar_camino_libre(lidar_points, radio_robot, direccion='front', margen_extra=0.10):
-    # Aperturas optimizadas: 7 ángulos, M menor
     if direccion == 'left':
         angulos = [85, 90, 95]
         M = 5
@@ -36,9 +119,8 @@ def buscar_camino_libre(lidar_points, radio_robot, direccion='front', margen_ext
         angulos = [-20, -13, -6, 0, 6, 13, 20]
         M = 5
     else:
-        # Ordenados para priorizar ángulos más cercanos al frente
         angulos = [30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180] 
-        M = 3 # Solo 3 pasos para escapar rápido
+        M = 3 
         
     margen = radio_robot + margen_extra
     margen_sq = margen * margen
@@ -59,7 +141,6 @@ def buscar_camino_libre(lidar_points, radio_robot, direccion='front', margen_ext
             
             choca = False
             for px, py in lidar_points:
-                # Optimización drástica: evitar math.hypot (raíz cuadrada)
                 if (px - cx)*(px - cx) + (py - cy)*(py - cy) < margen_sq:
                     choca = True
                     break
@@ -85,6 +166,8 @@ def main():
         screen = None
         clock = None
 
+    qr_thread = None
+
     if use_simulator:
         world = World()
         map_file = "world_map.json"
@@ -106,6 +189,9 @@ def main():
         robot = TurtleBotReal("config.json")
         world = None
         dt = 0.05
+        
+        qr_thread = QRScannerThread()
+        qr_thread.start()
 
     running = True
     paused = False
@@ -114,18 +200,23 @@ def main():
     ultimo_giro = 'left'
     tiempo_estado = 0.0
     cooldown_senal = 0.0
+    clase_ignorada = None  # NUEVO: Para evitar bucles de señales
     choques = 0
-    history = []
     
-    last_log_time = 0.0  # Tracker temporal para YOLO
+    last_log_time = 0.0
     tracker = {
         'class': None,
         'relative_angle': 0.0,
         'distance': float('inf'),
         'frames_lost': 999,
-        'max_frames': 90,  # 3 segundos a 30 FPS
+        'max_frames': 90,
         'consecutive_frames': 0
     }
+    
+    sim_contador_qr = 0
+    sim_ultimo_tiempo_qr = 0
+    sim_qr_en_pantalla = False
+    sim_qrs = []
     
     v_target = 0.0
     w_target = 0.0
@@ -148,12 +239,13 @@ def main():
             'ultimo_giro': ultimo_giro,
             'tiempo_estado': tiempo_estado,
             'cooldown_senal': cooldown_senal,
+            'clase_ignorada': clase_ignorada,
             'choques': choques,
             'tracker': dict(tracker)
         }
         
     def set_state(st):
-        nonlocal estado_actual, ultimo_giro, tiempo_estado, cooldown_senal, choques, tracker
+        nonlocal estado_actual, ultimo_giro, tiempo_estado, cooldown_senal, clase_ignorada, choques, tracker
         if use_simulator:
             robot._TurtleBotMock__x = st['x']
             robot._TurtleBotMock__y = st['y']
@@ -162,6 +254,7 @@ def main():
         ultimo_giro = st.get('ultimo_giro', 'left')
         tiempo_estado = st['tiempo_estado']
         cooldown_senal = st['cooldown_senal']
+        clase_ignorada = st.get('clase_ignorada', None)
         choques = st.get('choques', choques)
         tracker = dict(st.get('tracker', tracker))
 
@@ -227,7 +320,6 @@ def main():
                         view_mode = "robot" if view_mode == "global" else "global"
                     elif event.key == pygame.K_SPACE:
                         paused = not paused
-                        # Al pausar, nos situamos en el presente
                         if paused:
                             history_index = len(history) - 1
                     elif event.key == pygame.K_LEFT and paused:
@@ -246,14 +338,12 @@ def main():
                 time.sleep(0.05)
             continue
             
-        # Filtrar reflexiones propias del chasis simulando el hardware real
         lidar_scan = [d if d >= 0.18 else robot.lidar_max_range for d in lidar_scan_raw]
         if use_yolo:
             vision_dets = robot.get_vision_detections()
         else:
             vision_dets = []
         
-        # Pre-computar puntos x,y del lidar para que la función sea ultra rápida
         lidar_points = []
         for i, dist_p in enumerate(lidar_scan):
             if dist_p < robot.lidar_max_range:
@@ -266,47 +356,72 @@ def main():
         if not paused:
             if cooldown_senal > 0:
                 cooldown_senal -= dt
-
+            else:
+                clase_ignorada = None  # Recuperamos la vista
+                
             v_target = 0.0
             w_target = 0.0
-            
             dist_frente_estricto = min(lidar_scan[0:15] + lidar_scan[345:360])
+
+            # Filtramos la visión si el robot está ignorando alguna señal
+            vision_dets_crudo = list(vision_dets)
+            if clase_ignorada:
+                vision_dets = [d for d in vision_dets if d['class'] != clase_ignorada]
+
+            # --- Capturar QR ---
+            if use_simulator:
+                sim_qrs = robot.get_qr_detections()
+                tiempo_sim_actual = time.time()
+                
+                if len(sim_qrs) > 0:
+                    if not sim_qr_en_pantalla:
+                        sim_contador_qr += 1
+                        print(f"\n---> [SIM QR DETECTADO] #{sim_contador_qr} | Contenido: {sim_qrs[0]['content']} <---")
+                        sim_qr_en_pantalla = True
+                    sim_ultimo_tiempo_qr = tiempo_sim_actual
+                else:
+                    sim_qr_en_pantalla = False
+                    if sim_contador_qr > 0 and (tiempo_sim_actual - sim_ultimo_tiempo_qr) >= 5.0:
+                        sim_contador_qr = 0
 
             # ========================================================
             # 2. ACTUALIZAR TRACKER Y ESTADO SEGÚN YOLO
             # ========================================================
             if len(vision_dets) > 0:
-                # Priorizar la señal que ya estamos trackeando si sigue visible para evitar flickering
                 if tracker['class'] is not None and tracker['frames_lost'] < tracker['max_frames']:
                     mismas_clase = [d for d in vision_dets if d['class'] == tracker['class']]
                     if len(mismas_clase) > 0:
                         senal = sorted(mismas_clase, key=lambda d: abs(d['relative_angle']))[0]
+                        tracker['consecutive_frames'] += 1
+                        
+                        ang_grados = int(math.degrees(senal['relative_angle']))
+                        dist_lidar = min([lidar_scan[(ang_grados + i) % 360] for i in range(-5, 6)])
+                        
+                        tracker['relative_angle'] = senal['relative_angle']
+                        tracker['distance'] = dist_lidar
+                        tracker['frames_lost'] = 0
                     else:
-                        senal = sorted(vision_dets, key=lambda d: abs(d['relative_angle']))[0]
+                        tracker['frames_lost'] += 1
                 else:
                     senal = sorted(vision_dets, key=lambda d: abs(d['relative_angle']))[0]
-                
-                if tracker['class'] == senal['class']:
-                    tracker['consecutive_frames'] += 1
-                else:
+                    tracker['class'] = senal['class']
                     tracker['consecutive_frames'] = 1
-                
-                # Distancia extraída desde el LiDAR en la dirección de la señal
-                ang_grados = int(math.degrees(senal['relative_angle']))
-                dist_lidar = min([lidar_scan[(ang_grados + i) % 360] for i in range(-5, 6)])
-                
-                tracker['class'] = senal['class']
-                tracker['relative_angle'] = senal['relative_angle']
-                tracker['distance'] = dist_lidar
-                tracker['frames_lost'] = 0
+                    
+                    ang_grados = int(math.degrees(senal['relative_angle']))
+                    dist_lidar = min([lidar_scan[(ang_grados + i) % 360] for i in range(-5, 6)])
+                    tracker['relative_angle'] = senal['relative_angle']
+                    tracker['distance'] = dist_lidar
+                    tracker['frames_lost'] = 0
             else:
                 tracker['frames_lost'] += 1
-                if tracker['frames_lost'] >= tracker['max_frames']:
-                    tracker['consecutive_frames'] = 0
-                    if estado_actual == "ACERCANDOSE_A_SENAL":
-                        estado_actual = "EXPLORANDO"
 
-            if tracker['frames_lost'] < tracker['max_frames'] and cooldown_senal <= 0 and tracker['consecutive_frames'] >= c_min_frames:
+            if tracker['frames_lost'] >= tracker['max_frames']:
+                tracker['consecutive_frames'] = 0
+                tracker['class'] = None
+                if estado_actual == "ACERCANDOSE_A_SENAL":
+                    estado_actual = "EXPLORANDO"
+
+            if tracker['frames_lost'] < tracker['max_frames'] and tracker['consecutive_frames'] >= c_min_frames:
                 clase = tracker['class']
                 dist = tracker['distance']
                 
@@ -321,17 +436,22 @@ def main():
                             estado_actual = "BUSCANDO_DER"
                         else:
                             estado_actual = "ACERCANDOSE_A_SENAL"
-                    elif clase == 'stop' and dist <= c_stop_dist:
-                        estado_actual = "DETENIDO"
-                        tiempo_estado = c_time_stop
-                    elif clase == 'finish' and dist <= c_stop_dist:
-                        estado_actual = "FINALIZADO"
+                    elif clase == 'stop':
+                        # EVITA EL CALLEJÓN: Si está cerca del Stop, prepara un giro de 180º
+                        if dist <= c_stop_dist + 0.5:
+                            estado_actual = "DETENIDO_PRE_180"
+                            tiempo_estado = 1.0 # 1 Segundo de pausa
+                        else:
+                            estado_actual = "EXPLORANDO"
+                    elif clase == 'finish':
+                        if dist <= c_stop_dist:
+                            estado_actual = "FINALIZADO"
+                        else:
+                            estado_actual = "ACERCANDOSE_A_SENAL"
 
             # ========================================================
             # 3. LÓGICA DE CADA ESTADO
             # ========================================================
-            
-            # Función local para evadir paredes con interpolación matemática muy suave
             def calcular_repulsion(scan, rad_amarillo, rad_fuerte, fac_suave, fac_fuerte):
                 min_izq = min(scan[0:180])
                 min_der = min(scan[180:360])
@@ -340,15 +460,12 @@ def main():
                     if dist >= rad_amarillo:
                         return 0.0
                     
-                    # Proporción base lineal (0 en rad_amarillo, 1 en el centro)
                     intensidad = (rad_amarillo - dist) / rad_amarillo
                     
                     if dist <= rad_fuerte:
-                        # Sube exponencialmente si está a punto de chocar
                         sobre_paso = (rad_fuerte - dist) / rad_fuerte
                         mult = fac_fuerte + (sobre_paso ** 2) * 5.0
                     else:
-                        # Interpolación 100% suave entre suave y fuerte para pasillos normales
                         ratio = (rad_amarillo - dist) / (rad_amarillo - rad_fuerte)
                         mult = fac_suave + ratio * (fac_fuerte - fac_suave)
                         
@@ -360,39 +477,27 @@ def main():
 
             if estado_actual == "EXPLORANDO":
                 v_target = max(c_min_v, min(c_max_v, (dist_frente_estricto - 0.4) * c_max_v))
-                
-                # Multiplicador empírico para convertir la fuerza en velocidad angular (rad/s)
                 w_target = calcular_repulsion(lidar_scan, c_rad_amarillo, c_rad_giro_f, c_fac_rep_s, c_fac_rep_f) * 2.5
-                
-                # Limitar el giro en exploración para que no dé volantazos exagerados
                 w_target = max(-1.5, min(1.5, w_target))
 
             elif estado_actual == "ACERCANDOSE_A_SENAL":
-                # Misma velocidad que explorando
                 v_target = max(c_min_v, min(c_max_v, (dist_frente_estricto - 0.4) * c_max_v))
-                
                 w_camara = 0.0
                 if tracker['frames_lost'] < tracker['max_frames']:
                     w_camara = tracker['relative_angle'] * c_w_appr
-                
-                # Mantener la flecha pero evadiendo paredes al mismo tiempo
                 w_repulsion = calcular_repulsion(lidar_scan, c_rad_amarillo, c_rad_giro_f, c_fac_rep_s, c_fac_rep_f) * 1.5
                 w_target = w_camara + w_repulsion
                     
             elif estado_actual in ["BUSCANDO_IZQ", "BUSCANDO_DER"]:
-                # Misma velocidad que explorando, la velocidad varía solo si nos vamos a estrellar
                 v_target = max(c_min_v, min(c_max_v, (dist_frente_estricto - 0.4) * c_max_v))
-                
                 w_camara = 0.0
                 if tracker['frames_lost'] < tracker['max_frames']:
                     w_camara = tracker['relative_angle'] * c_w_appr
-                    
                 w_repulsion = calcular_repulsion(lidar_scan, c_rad_amarillo, c_rad_giro_f, c_fac_rep_s, c_fac_rep_f) * 1.5
                 w_target = w_camara + w_repulsion
                 
                 dir_search = 'left' if estado_actual == "BUSCANDO_IZQ" else 'right'
                 
-                # Probar con margen grueso, medio, y finalmente el radio exacto
                 espacio, _, intentos, dists, marg = buscar_camino_libre(lidar_points, robot.radius, dir_search, 0.10)
                 if not espacio:
                     espacio, _, intentos, dists, marg = buscar_camino_libre(lidar_points, robot.radius, dir_search, 0.05)
@@ -409,67 +514,71 @@ def main():
                     tiempo_estado = 0.0
 
             elif estado_actual in ["GIRANDO_IZQ", "GIRANDO_DER"]:
-                # Avanzamos y giramos más rápido para no chocar con la pared frontal
                 v_target = c_v_turn 
                 w_target = c_w_turn if estado_actual == "GIRANDO_IZQ" else -c_w_turn
                 tiempo_estado += dt
                 
-                # Verificamos visualmente el frente (para debug en UI)
+                # Mantenemos buscar_camino_libre solo para dibujar el radar verde en la UI
                 espacio_frente, _, intentos, dists, marg = buscar_camino_libre(lidar_points, robot.radius, 'front', 0.10)
-                if not espacio_frente:
-                    espacio_frente, _, intentos, dists, marg = buscar_camino_libre(lidar_points, robot.radius, 'front', 0.05)
-                if not espacio_frente:
-                    espacio_frente, _, intentos, dists, marg = buscar_camino_libre(lidar_points, robot.radius, 'front', 0.0)
-                
                 intentos_render = intentos
                 render_distancias = dists
                 render_margen = marg
                 
-                # A c_w_turn rad/s, 90 grados toman cierto tiempo.
-                if tiempo_estado >= c_time_min_g and espacio_frente: 
+                # --- NUEVA LÓGICA: Giro Matemático Exacto de 90 Grados ---
+                tiempo_giro_90 = (math.pi / 2) / c_w_turn
+                
+                if tiempo_estado >= tiempo_giro_90: 
                     estado_actual = "EXPLORANDO"
                     cooldown_senal = c_cool_post
-                # Evitar girar infinitamente
-                elif tiempo_estado >= c_time_max_g:
-                    estado_actual = "EXPLORANDO"
-                    cooldown_senal = c_cool_post
+                    clase_ignorada = 'left' if ultimo_giro == 'left' else 'right'
+                    tracker['frames_lost'] = 999
+                    tracker['class'] = None
 
-            elif estado_actual == "DETENIDO":
+            elif estado_actual == "DETENIDO_PRE_180":
                 v_target = 0.0
                 w_target = 0.0
                 tiempo_estado -= dt
                 if tiempo_estado <= 0:
+                    estado_actual = "GIRANDO_180"
+                    # Giro Matemático de 180 Grados (PI)
+                    tiempo_estado = math.pi / c_w_turn 
+
+            elif estado_actual == "GIRANDO_180":
+                # Al mantener v_target = 0, el robot gira sobre su propio eje sin rozar paredes
+                v_target = 0.0 
+                w_target = c_w_turn 
+                tiempo_estado -= dt
+                if tiempo_estado <= 0:
                     estado_actual = "EXPLORANDO"
-                    cooldown_senal = c_cool_stop
+                    cooldown_senal = c_cool_post
+                    clase_ignorada = 'stop' # Ignora la señal STOP mientras se aleja de regreso
+                    tracker['frames_lost'] = 999
+                    tracker['class'] = None
 
             elif estado_actual == "FINALIZADO":
-                # Meta alcanzada: se queda detenido, sin volver a EXPLORANDO.
                 v_target = 0.0
                 w_target = 0.0
 
             # ========================================================
-            # 4. ANTI-CHOQUES Y EVASIÓN (Giro estático hasta ruta libre)
+            # 4. ANTI-CHOQUES Y EVASIÓN
             # ========================================================
             riesgo_inminente = False
             min_dist_frontal = float('inf')
-            # Reducimos el cono de choque frontal a +/- 20 grados para no detectar paredes laterales
             for i in list(range(0, 21)) + list(range(339, 360)):
                 if lidar_scan[i] < min_dist_frontal:
                     min_dist_frontal = lidar_scan[i]
             
-            # Umbral de choque frontal (0.35m por defecto o de config)
             if min_dist_frontal < c_evas_f and v_target > 0.05:
                 riesgo_inminente = True
                 
             if riesgo_inminente or estado_actual == "EVASION_EMERGENCIA":
                 if estado_actual != "EVASION_EMERGENCIA":
-                    tiempo_estado = 0.0 # Reset de tiempo de atasco
+                    tiempo_estado = 0.0
                 estado_actual = "EVASION_EMERGENCIA"
                 
-                v_target = 0.0 # Detenemos el robot
+                v_target = 0.0 
                 tiempo_estado += dt
                 
-                # Buscamos escape SOLO al frente con un margen muy pequeño (casi el radio exacto)
                 esp_escape, ang_escape, intentos, dists, marg = buscar_camino_libre(lidar_points, robot.radius, 'front', 0.02)
                 intentos_render = intentos
                 render_distancias = dists
@@ -479,24 +588,22 @@ def main():
                     ang_rel = ang_escape if ang_escape <= 180 else ang_escape - 360
                     w_target = math.radians(ang_rel) * 4.0
                     
-                    # Si ya estamos alineados y el frente está libre, salimos de emergencia
                     if abs(ang_rel) < 15 and dist_frente_estricto > 0.4:
                         estado_actual = "EXPLORANDO"
-                        cooldown_senal = c_cool_post # Evitar volver a leer el cartel que nos metió en problemas
-                        v_target = c_min_v # Solución al bug de estancamiento (fuerza un pequeño empuje para escapar del loop)
+                        cooldown_senal = c_cool_post
+                        clase_ignorada = None 
+                        tracker['frames_lost'] = 999
+                        tracker['class'] = None
+                        v_target = c_min_v
                 else:
-                    # Si acabamos de girar (cooldown activo), seguimos girando en esa misma dirección
                     if cooldown_senal > 0:
                         w_target = 3.0 if ultimo_giro == 'left' else -3.0
                     else:
-                        # Buscamos la ruta libre más cercana (menor rotación requerida)
                         esp_escape_all, ang_escape_all, _, _, _ = buscar_camino_libre(lidar_points, robot.radius, 'all', 0.0)
                         if esp_escape_all:
                             ang_rel_all = ang_escape_all if ang_escape_all <= 180 else ang_escape_all - 360
-                            # Girar hacia donde la rotación sea más corta
                             w_target = 3.0 if ang_rel_all > 0 else -3.0
                         else:
-                            # Sin salida, giramos por defecto
                             w_target = 3.0
 
             # ========================================================
@@ -516,9 +623,9 @@ def main():
                 history_index = len(history) - 1
                 time_since_save = 0.0
         else:
-            # En pausa, renderizamos el sweep correspondiente al estado congelado
             v_target = 0.0
             w_target = 0.0
+            vision_dets_crudo = []
             
             dir_search = 'front'
             margen = 0.10
@@ -526,7 +633,6 @@ def main():
             elif estado_actual == "BUSCANDO_DER": dir_search = 'right'
             elif estado_actual == "EVASION_EMERGENCIA": dir_search = 'any'; margen = 0.15
             
-            # Crear lidar_points estático para la pausa
             lidar_points = []
             for i, dist_p in enumerate(lidar_scan):
                 if dist_p < robot.lidar_max_range:
@@ -539,21 +645,22 @@ def main():
                 _, _, intentos_render, render_distancias, render_margen = buscar_camino_libre(lidar_points, robot.radius, dir_search, 0.0)
 
         # ========================================================
-        # 6. DIBUJADO Y TELEMETRÍA (SI LA UI ESTÁ ACTIVA)
+        # 6. DIBUJADO Y TELEMETRÍA (LOGS MEJORADOS)
         # ========================================================
+        tiempo_actual_log = time.time() if use_simulator else current_time
+        if tiempo_actual_log - last_log_time > 0.33: 
+            yolo_strs = [f"[{d['class'].upper()}] a {d['distance']:.2f}m (Ang: {math.degrees(d['relative_angle']):.0f}º)" for d in vision_dets_crudo]
+            yolo_str = " | ".join(yolo_strs) if yolo_strs else "Nada a la vista"
+            
+            estado_str = estado_actual
+            if cooldown_senal > 0 and clase_ignorada:
+                estado_str += f" (IGNORA: {clase_ignorada.upper()})"
+                
+            print(f"[*] {estado_str:<35} -> OJOS VEN: {yolo_str}")
+            last_log_time = tiempo_actual_log
+
         if not use_ui:
-            # Si no hay UI, limitamos la velocidad del bucle
             time.sleep(1.0 / 30.0)
-            
-            # Loguear en consola 4 veces por segundo
-            if current_time - last_log_time > 0.25:
-                yolo_log = [f"[{d['class']} {d['distance']:.2f}m]" for d in vision_dets]
-                log_str = f"Estado: {estado_actual:<20} | v={v_target:.2f}, w={w_target:.2f} | YOLO: {' '.join(yolo_log) if yolo_log else 'Ninguna'}"
-                if cooldown_senal > 0:
-                    log_str += f" | (IGNORANDO: {cooldown_senal:.1f}s)"
-                print(log_str)
-                last_log_time = current_time
-            
             continue
             
         screen.fill((10, 15, 10))
@@ -563,7 +670,6 @@ def main():
             rx, ry, rtheta = robot._get_true_pose()
         
         if view_mode == "global" and use_simulator:
-            # --- RENDER GLOBAL (Original) ---
             for p1, p2 in world.obstacles:
                 pygame.draw.line(screen, (100, 150, 100), to_screen(*p1), to_screen(*p2), 2)
 
@@ -573,9 +679,15 @@ def main():
                 img = font.render(sig['type'], True, (255, 255, 0))
                 screen.blit(img, (sx + 10, sy - 10))
 
+            if hasattr(world, 'qrs'):
+                for qr in world.qrs:
+                    qx, qy = to_screen(qr['x'], qr['y'])
+                    pygame.draw.rect(screen, (0, 255, 255), (qx - 5, qy - 5, 10, 10))
+                    img = font.render(qr['content'], True, (0, 255, 255))
+                    screen.blit(img, (qx + 10, qy - 10))
+
             rsx, rsy = to_screen(rx, ry)
 
-            # DIBUJAR INTENTOS DEL SWEEP ALGORÍTMICO
             for intento in intentos_render:
                 ang_c = intento['angulo']
                 es_valido = intento['valido']
@@ -612,13 +724,9 @@ def main():
 
             robot_px_radius = int(robot.radius * SCALE)
             
-            # Anillo rojo (Límite de colisión lateral)
             pygame.draw.circle(screen, (200, 50, 50), (rsx, rsy), int(c_evas_g * SCALE), 1)
-            # Anillo naranja (Límite de evasión frontal)
             pygame.draw.circle(screen, (255, 100, 0), (rsx, rsy), int(c_evas_f * SCALE), 1)
-            # Anillo amarillo oscuro (Límite de giro fuerte/repulsión)
             pygame.draw.circle(screen, (200, 180, 50), (rsx, rsy), int(c_rad_giro_f * SCALE), 1)
-            # Anillo amarillo claro (Límite de giro suave/exploración)
             pygame.draw.circle(screen, (255, 255, 0), (rsx, rsy), int(c_rad_amarillo * SCALE), 1)
             
             pygame.draw.circle(screen, (60, 220, 60), (rsx, rsy), robot_px_radius)
@@ -626,14 +734,11 @@ def main():
             pygame.draw.line(screen, (10, 15, 10), (rsx, rsy), (hx, hy), 3)
 
         else:
-            # --- RENDER VISTA ROBOT (Local) ---
             rsx, rsy = OFFSET_X, OFFSET_Y
             
-            # Dibujar LiDAR (centrado, mirando hacia arriba)
             angle_increment = (2 * math.pi) / robot.lidar_resolution
             for i, dist in enumerate(lidar_scan):
                 if dist < robot.lidar_max_range:
-                    # Sumamos el ángulo para invertir el render y que izquierda sea izquierda
                     screen_angle = math.pi / 2 + i * angle_increment
                     esx = int(rsx + dist * math.cos(screen_angle) * SCALE)
                     esy = int(rsy - dist * math.sin(screen_angle) * SCALE)
@@ -646,7 +751,6 @@ def main():
                     else:
                         pygame.draw.circle(screen, (0, 255, 0), (esx, esy), 1)
 
-            # Dibujar FOV
             fov_l = math.pi/2 + robot.camera_fov / 2
             fov_r = math.pi/2 - robot.camera_fov / 2
             fl_x = int(rsx + 2 * math.cos(fov_l) * SCALE)
@@ -656,14 +760,12 @@ def main():
             pygame.draw.line(screen, (50, 150, 50), (rsx, rsy), (fl_x, fl_y), 1)
             pygame.draw.line(screen, (50, 150, 50), (rsx, rsy), (fr_x, fr_y), 1)
 
-            # Dibujar Robot (Tono verde tortuga)
             robot_px_radius = int(robot.radius * SCALE)
             pygame.draw.circle(screen, (60, 220, 60), (rsx, rsy), robot_px_radius)
-            hx, hy = rsx, rsy - robot_px_radius # Frente hacia arriba
+            hx, hy = rsx, rsy - robot_px_radius
             pygame.draw.line(screen, (10, 15, 10), (rsx, rsy), (hx, hy), 3)
             
-            # Dibujar señales detectadas por YOLO
-            for det in vision_dets:
+            for det in vision_dets_crudo:
                 dist = det['distance']
                 rel_a = det['relative_angle']
                 screen_angle = math.pi / 2 + rel_a
@@ -675,11 +777,23 @@ def main():
                 img = font.render(det['class'], True, (255, 255, 0))
                 screen.blit(img, (sx + 15, sy - 10))
 
+            for sqr in sim_qrs:
+                dist = sqr['distance']
+                rel_a = sqr['relative_angle']
+                screen_angle = math.pi / 2 + rel_a
+                
+                sx = int(rsx + dist * math.cos(screen_angle) * SCALE)
+                sy = int(rsy - dist * math.sin(screen_angle) * SCALE)
+                
+                pygame.draw.rect(screen, (0, 255, 255), (sx - 6, sy - 6, 12, 12))
+                img = font.render(sqr['content'], True, (0, 255, 255))
+                screen.blit(img, (sx + 15, sy - 10))
+
         fps = clock.get_fps()
         mode_text = f"SIMULADOR (FPS: {fps:.1f})" if use_simulator else f"ROBOT REAL (FPS: {1.0/max(0.001, dt):.1f})"
         screen.blit(pygame.font.SysFont(None, 36).render(f"[{mode_text}] Algoritmo: {estado_actual}", True, (60, 220, 60)), (10, 10))
-        if cooldown_senal > 0:
-            screen.blit(pygame.font.SysFont(None, 24).render(f"(Ignorando señales por: {cooldown_senal:.1f}s para evitar bucle)", True, (255, 200, 0)), (400, 15))
+        if cooldown_senal > 0 and clase_ignorada:
+            screen.blit(pygame.font.SysFont(None, 24).render(f"(Ignorando {clase_ignorada.upper()} por: {cooldown_senal:.1f}s)", True, (255, 200, 0)), (400, 15))
             
         screen.blit(pygame.font.SysFont(None, 28).render(f"v={v_target:.2f}, w={w_target:.2f}", True, (150, 200, 150)), (10, 45))
 
@@ -687,9 +801,16 @@ def main():
         screen.blit(pygame.font.SysFont(None, 28).render(f"Choques: {choques}", True, color_choque), (10, 75))
 
         y_offset = 105
-        for det in vision_dets:
+        for det in vision_dets_crudo:
             text = f"YOLO Ve: '{det['class']}' a {det['distance']:.2f}m (Ang: {math.degrees(det['relative_angle']):.1f}º)"
-            img = font.render(text, True, (200, 255, 200))
+            color_txt = (100, 100, 100) if det['class'] == clase_ignorada else (200, 255, 200)
+            img = font.render(text, True, color_txt)
+            screen.blit(img, (10, y_offset))
+            y_offset += 25
+            
+        for sqr in sim_qrs:
+            text = f"QR Escaneado: '{sqr['content']}' a {sqr['distance']:.2f}m (Ang: {math.degrees(sqr['relative_angle']):.1f}º)"
+            img = font.render(text, True, (0, 255, 255))
             screen.blit(img, (10, y_offset))
             y_offset += 25
 
@@ -702,6 +823,12 @@ def main():
 
         pygame.display.flip()
         clock.tick(30)
+
+    if qr_thread is not None:
+        print("\nApagando escáner QR...")
+        qr_thread.stop()
+        qr_thread.join(timeout=1.0)
+        print("Escáner QR detenido correctamente.")
 
 if __name__ == "__main__":
     main()

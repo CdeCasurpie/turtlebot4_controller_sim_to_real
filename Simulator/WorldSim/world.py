@@ -4,11 +4,13 @@ from typing import List, Tuple, Dict, Any
 class World:
     def __init__(self):
         # Geometría dura (muros, cajas) representada como segmentos de línea
-        # list of line segments: ((x1, y1), (x2, y2))
         self.obstacles: List[Tuple[Tuple[float, float], Tuple[float, float]]] = [] 
         
-        # Objetos semánticos: {'type': 'right', 'x': 2.0, 'y': 3.0}
+        # Objetos semánticos para YOLO
         self.signals: List[Dict[str, Any]] = []   
+        
+        # QRs esparcidos en el mapa
+        self.qrs: List[Dict[str, Any]] = []
         
         # Posición inicial del robot
         self.robot_start: Dict[str, float] = {'x': 0.0, 'y': 0.0, 'theta': 0.0}
@@ -25,11 +27,15 @@ class World:
 
     def add_signal(self, signal_type: str, x: float, y: float):
         self.signals.append({'type': signal_type, 'x': x, 'y': y})
+        
+    def add_qr(self, content: str, x: float, y: float):
+        self.qrs.append({'content': content, 'x': x, 'y': y})
 
     def save_to_file(self, filename: str):
         data = {
             'obstacles': self.obstacles,
             'signals': self.signals,
+            'qrs': self.qrs,
             'robot_start': self.robot_start
         }
         with open(filename, 'w') as f:
@@ -38,7 +44,7 @@ class World:
     def load_from_file(self, filename: str):
         with open(filename, 'r') as f:
             data = json.load(f)
-            # Reconstruir las tuplas
             self.obstacles = [((p1[0], p1[1]), (p2[0], p2[1])) for p1, p2 in data.get('obstacles', [])]
             self.signals = data.get('signals', [])
+            self.qrs = data.get('qrs', [])
             self.robot_start = data.get('robot_start', {'x': 0.0, 'y': 0.0, 'theta': 0.0})

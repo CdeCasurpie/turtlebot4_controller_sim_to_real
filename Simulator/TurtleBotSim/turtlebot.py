@@ -8,21 +8,18 @@ from Simulator.WorldSim.world import World
 class TurtleBotMock:
     def __init__(self, world: World, initial_x: float = 0.0, initial_y: float = 0.0, initial_theta: float = 0.0):
         self._world = world
-        # Pose oculta (Ground Truth)
         self.__x = initial_x
         self.__y = initial_y
         self.__theta = initial_theta
         
-        # Especificaciones del sensor
-        self.lidar_resolution = 360 # Rayos
-        self.lidar_max_range = 12.0 # Metros
-        self.camera_fov = math.radians(60) # Campo de visión del YOLO
-        self.camera_min_range = 0.1 # Rango mínimo ciego
-        self.camera_max_range = 5.0 # Límite físico de detección de YOLO (aumentado)
-        self.radius = 0.17 # Radio aproximado del robot (Create 3)
+        self.lidar_resolution = 360
+        self.lidar_max_range = 12.0
+        self.camera_fov = math.radians(60)
+        self.camera_min_range = 0.1
+        self.camera_max_range = 5.0
+        self.radius = 0.17
         
-        # Simulación de imperfecciones de hardware real
-        self.__command_buffer = [(0.0, 0.0)] * 3 # Delay sutil de 3 frames (~50ms)
+        self.__command_buffer = [(0.0, 0.0)] * 3
         self.v_actual = 0.0
         self.omega_actual = 0.0
         
@@ -32,24 +29,14 @@ class TurtleBotMock:
         }
 
     def update_config(self, config_dict):
-        """Actualiza la configuración en tiempo de ejecución para pruebas"""
         self.sim_config.update(config_dict)
 
-    # ==========================================
-    # INTERFAZ DE ACTUADORES (Planta Cinemática)
-    # ==========================================
     def move(self, v: float, omega: float, dt: float) -> bool:
-        """
-        Integra el modelo diferencial estricto de forma numérica.
-        Resuelve colisiones matemáticamente (repulsión) y retorna True si hubo choque.
-        """
         import random
         
-        # Añadir al buffer y extraer el comando retrasado
         self.__command_buffer.append((v, omega))
         v_delayed, omega_delayed = self.__command_buffer.pop(0)
         
-        # Ruido de actuadores (Gaussiana suave)
         self.v_actual = v_delayed + random.gauss(0, 0.02) if v_delayed != 0 else 0.0
         self.omega_actual = omega_delayed + random.gauss(0, 0.05) if omega_delayed != 0 else 0.0
         
@@ -81,95 +68,60 @@ class TurtleBotMock:
                     
         return chocado
 
-    # ==========================================
-    # INTERFAZ DE SENSORES (Observaciones)
-    # ==========================================
     def get_lidar_scan(self) -> np.ndarray:
-        """
-        Retorna un array de 360 distancias usando el motor de raycasting.
-        """
         raw_scan = np.zeros(self.lidar_resolution)
         angle_increment = (2 * math.pi) / self.lidar_resolution
         import random
         
-        # El hardware real tiene su índice 0 apuntando hacia la DERECHA (-90 grados)
         offset_hardware = -math.pi / 2
         
         for i in range(self.lidar_resolution):
             ray_angle = self.__theta + offset_hardware + i * angle_increment
             dist = cast_ray((self.__x, self.__y), ray_angle, self._world.obstacles, self.lidar_max_range)
-            # Añadir ruido Gaussiano al LiDAR (~1.5cm de desviación típica)
             if dist < self.lidar_max_range:
                 dist += random.gauss(0, 0.015)
                 
-            # Simular reflexiones espurias del chasis (< 0.18m)
-            if random.random() < 0.02: # 2% de probabilidad
+            if random.random() < 0.02:
                 dist = random.uniform(0.05, 0.17)
                 
             raw_scan[i] = max(0.0, dist)
             
-        # CORRECCIÓN DE CALIBRACIÓN DE HARDWARE (igual que en turtlebot.py real)
         raw_scan_list = raw_scan.tolist()
         corrected_scan = raw_scan_list[90:] + raw_scan_list[:90]
             
         return np.array(corrected_scan)
 
     def get_vision_detections(self):
-        """
-        Mock de YOLO + Sensor Fusion con LiDAR.
-        Retorna una lista de detecciones simulando lo que YOLO Nano vería y 
-        fusionando la distancia del LiDAR.
-        """
         import random
         detections = []
         for signal in self._world.signals:
-            # Simular Falsos Negativos de YOLO (Accuracy ~95%)
             if random.random() > 0.95:
                 continue
                 
-            # 1. Transformación al marco de referencia del robot
             dx = signal['x'] - self.__x
             dy = signal['y'] - self.__y
-            
-            # Ángulo absoluto del objeto
             angle_to_signal = math.atan2(dy, dx)
-            
-            # Ángulo relativo (bearing) respecto a la orientación del robot
             relative_angle = normalize_angle(angle_to_signal - self.__theta)
             
-            # 2. Condición de Campo de Visión (Culling frustum)
             if abs(relative_angle) <= (self.camera_fov / 2):
                 true_dist = math.hypot(dx, dy)
-                
-                # Deficiencia del sensor YOLO: Sólo detecta entre min y max metros
                 if not (self.camera_min_range <= true_dist <= self.camera_max_range):
                     continue
                 
-                # 3. Validar Oclusión y Fusión con LiDAR mock
-                # Simulamos enviar un rayo directamente a la señal
                 obstacle_dist = cast_ray((self.__x, self.__y), angle_to_signal, self._world.obstacles, self.lidar_max_range)
-                
-                # Si no hay obstáculo entre el robot y la señal (o el obstáculo está detrás de la señal)
-                if obstacle_dist >= true_dist - 0.1: # Tolerancia pequeña
-                    # Ruido en el bounding box (jitter de ángulo ~ 2 grados)
+                if obstacle_dist >= true_dist - 0.1:
                     noisy_angle = relative_angle + random.gauss(0, math.radians(2.0))
-                    
-                    # La distancia en el robot real se estima con el LiDAR o Pinhole de forma muy imprecisa.
-                    noisy_distance = true_dist + random.gauss(0, 0.1 * true_dist) # 10% error
-                    
+                    noisy_distance = true_dist + random.gauss(0, 0.1 * true_dist)
                     detected_class = signal['type']
                     
-                    # Lógica de confusión por distancia
                     reliable_dist = self.sim_config.get("vision_reliable_dist", 0.45)
                     max_prob = self.sim_config.get("yolo_error_max_prob", 0.95)
                     if true_dist > reliable_dist:
                         prob_error = min(max_prob, (true_dist - reliable_dist) * 0.4)
                         
-                        # Probabilidad de no detectarlo en absoluto
                         if random.random() < prob_error:
                             continue
                             
-                        # Probabilidad de confundir la clase (left <-> right)
                         if detected_class in ['left', 'right'] and random.random() < prob_error:
                             detected_class = 'right' if detected_class == 'left' else 'left'
 
@@ -181,35 +133,58 @@ class TurtleBotMock:
                 
         return detections
 
+    def get_qr_detections(self):
+        """
+        Simula la lectura de un código QR. 
+        Implementa restricciones realistas de rango, FOV y blur de movimiento.
+        """
+        import random
+        detections = []
+        
+        # Simulación de Motion Blur: Si el robot gira a más de 0.8 rad/s o avanza muy rápido,
+        # la cámara captura una imagen borrosa y el decodificador falla.
+        if abs(self.omega_actual) > 0.8 or abs(self.v_actual) > 0.4:
+            return detections
+            
+        for qr in getattr(self._world, 'qrs', []):
+            dx = qr['x'] - self.__x
+            dy = qr['y'] - self.__y
+            angle_to_qr = math.atan2(dy, dx)
+            relative_angle = normalize_angle(angle_to_qr - self.__theta)
+            
+            # El QR debe estar en el campo de visión de la cámara
+            if abs(relative_angle) <= (self.camera_fov / 2):
+                true_dist = math.hypot(dx, dy)
+                
+                # Rango de enfoque (0.2m a 1.2m máximo para resolución típica)
+                if 0.2 <= true_dist <= 1.2:
+                    # Validar que ninguna pared tape el QR
+                    obstacle_dist = cast_ray((self.__x, self.__y), angle_to_qr, self._world.obstacles, self.lidar_max_range)
+                    if obstacle_dist >= true_dist - 0.1:
+                        # 15% de probabilidad de fallo por iluminación/reflejos
+                        if random.random() > 0.15:
+                            detections.append({
+                                'content': qr['content'],
+                                'distance': true_dist,
+                                'relative_angle': relative_angle
+                            })
+        return detections
+
     def get_camera_image_base64(self) -> str:
-        """
-        Genera una imagen JPEG codificada en Base64 con las señales vistas.
-        Compatible con el protocolo de telemetría de red.
-        """
         import cv2
         import base64
         
         frame = np.zeros((120, 160, 3), dtype=np.uint8)
-        frame[:] = (50, 50, 50) # Fondo oscuro
+        frame[:] = (50, 50, 50) 
         
         detections = self.get_vision_detections()
         for det in detections:
             d_theta = det['relative_angle']
-            
-            # Crear una pequeña imagen de la señal
             img_insert = np.zeros((60, 60, 3), dtype=np.uint8)
             img_insert[:] = (255, 255, 255)
             
             texto = det['class'][:3].upper()
-            cv2.putText(
-                img_insert,
-                texto,
-                (5, 40),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1.0,
-                (0, 0, 255),
-                2,
-            )
+            cv2.putText(img_insert, texto, (5, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
             
             h_i, w_i = 60, 60
             fov_half = self.camera_fov / 2
@@ -224,6 +199,5 @@ class TurtleBotMock:
         _, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
         return base64.b64encode(buffer).decode("utf-8")
 
-    # Funcionalidad interna EXCLUSIVA para el renderizado (no para control)
     def _get_true_pose(self):
         return self.__x, self.__y, self.__theta
