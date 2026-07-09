@@ -84,7 +84,7 @@ class QRScannerThread(threading.Thread):
                     if puntos is not None and len(puntos) > 0 and datos and datos != "":
                         if not qr_en_pantalla:
                             contador_qr += 1
-                            print(f"\n---> [NUEVO QR DETECTADO] #{contador_qr} | Contenido: {datos} <---")
+                            print(f"\n\033[92m---> [NUEVO QR DETECTADO] #{contador_qr} | Contenido: {datos} <---\033[0m")
                             qr_en_pantalla = True
                         
                         ultimo_tiempo = tiempo_actual
@@ -376,7 +376,7 @@ def main():
                 if len(sim_qrs) > 0:
                     if not sim_qr_en_pantalla:
                         sim_contador_qr += 1
-                        print(f"\n---> [SIM QR DETECTADO] #{sim_contador_qr} | Contenido: {sim_qrs[0]['content']} <---")
+                        print(f"\n\033[92m---> [SIM QR DETECTADO] #{sim_contador_qr} | Contenido: {sim_qrs[0]['content']} <---\033[0m")
                         sim_qr_en_pantalla = True
                     sim_ultimo_tiempo_qr = tiempo_sim_actual
                 else:
