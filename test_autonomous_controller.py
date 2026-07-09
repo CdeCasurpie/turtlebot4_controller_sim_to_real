@@ -43,10 +43,10 @@ class QRScannerThread(threading.Thread):
             return
 
         try:
-            self.detector = cv2.wechat_qrcode_WeChatQRCode()
-            print("[QR Thread] Motor WeChatQRCode inicializado correctamente.")
+            self.detector = cv2.QRCodeDetector()
+            print("[QR Thread] Motor QRCodeDetector clásico inicializado (Versión Liviana).")
         except Exception as e:
-            print(f"[QR Thread] Error al inicializar WeChatQRCode: {e}")
+            print(f"[QR Thread] Error al inicializar QRCodeDetector: {e}")
             self.detector = None
 
     def run(self):
@@ -78,13 +78,13 @@ class QRScannerThread(threading.Thread):
                         continue
                         
                     frame = in_rgb.getCvFrame()
-                    datos, puntos = self.detector.detectAndDecode(frame)
+                    datos, puntos, _ = self.detector.detectAndDecode(frame)
                     tiempo_actual = time.time()
 
-                    if puntos is not None and len(puntos) > 0 and datos and datos[0] != "":
+                    if puntos is not None and len(puntos) > 0 and datos and datos != "":
                         if not qr_en_pantalla:
                             contador_qr += 1
-                            print(f"\n---> [NUEVO QR DETECTADO] #{contador_qr} | Contenido: {datos[0]} <---")
+                            print(f"\n---> [NUEVO QR DETECTADO] #{contador_qr} | Contenido: {datos} <---")
                             qr_en_pantalla = True
                         
                         ultimo_tiempo = tiempo_actual
