@@ -126,6 +126,12 @@ def buscar_camino_libre(lidar_points, radio_robot, direccion='front', margen_ext
     elif direccion == 'front':
         angulos = [-20, -13, -6, 0, 6, 13, 20]
         M = 5
+    elif direccion == 'straight':
+        angulos = [0]
+        M = 6 # Revisar un poco más lejos hacia adelante
+    elif direccion == 'fan':
+        angulos = [15, -15, 30, -30, 45, -45, 60, -60, 75, -75, 90, -90]
+        M = 4
     else:
         angulos = [30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180] 
         M = 3 
@@ -369,7 +375,8 @@ def main():
                 
             v_target = 0.0
             w_target = 0.0
-            dist_frente_estricto = min(lidar_scan[0:15] + lidar_scan[345:360])
+            # Reducir el cono de velocidad/salida de evasión a [-8, 8] grados para evitar lecturas de paredes laterales
+            dist_frente_estricto = min(lidar_scan[0:9] + lidar_scan[351:360])
 
             # Filtramos la visión si el robot está ignorando alguna señal
             vision_dets_crudo = list(vision_dets)
@@ -484,9 +491,27 @@ def main():
                 return (f_der - f_izq)
 
             if estado_actual == "EXPLORANDO":
-                v_target = max(c_min_v, min(c_max_v, (dist_frente_estricto - 0.4) * c_max_v))
-                w_target = calcular_repulsion(lidar_scan, c_rad_amarillo, c_rad_giro_f, c_fac_rep_s, c_fac_rep_f) * 2.5
-                w_target = max(-1.5, min(1.5, w_target))
+                esp_recto, _, intentos_recto, dists_recto, marg_recto = buscar_camino_libre(lidar_points, robot.radius, 'straight', 0.05)
+                
+                if esp_recto:
+                    intentos_render, render_distancias, render_margen = intentos_recto, dists_recto, marg_recto
+                    v_target = c_max_v * 1.3 # Sprint más rápido! (130% de la velocidad máxima normal)
+                    # Pequeña repulsión para mantenerse centrado pero priorizando ir recto
+                    w_rep = calcular_repulsion(lidar_scan, c_rad_amarillo, c_rad_giro_f, c_fac_rep_s, c_fac_rep_f)
+                    w_target = max(-0.5, min(0.5, w_rep * 0.5)) 
+                else:
+                    # Si el frente no está libre, buscar el camino libre más cercano a 0 grados
+                    esp_fan, ang_fan, intentos_fan, dists_fan, marg_fan = buscar_camino_libre(lidar_points, robot.radius, 'fan', 0.05)
+                    intentos_render, render_distancias, render_margen = intentos_fan, dists_fan, marg_fan
+                    
+                    if esp_fan:
+                        ang_rel = ang_fan if ang_fan <= 180 else ang_fan - 360
+                        v_target = c_min_v
+                        w_target = math.radians(ang_rel) * 2.5
+                    else:
+                        v_target = max(c_min_v, min(c_max_v, (dist_frente_estricto - 0.4) * c_max_v))
+                        w_target = calcular_repulsion(lidar_scan, c_rad_amarillo, c_rad_giro_f, c_fac_rep_s, c_fac_rep_f) * 2.5
+                        w_target = max(-1.5, min(1.5, w_target))
 
             elif estado_actual == "ACERCANDOSE_A_SENAL":
                 v_target = max(c_min_v, min(c_max_v, (dist_frente_estricto - 0.4) * c_max_v))
@@ -572,7 +597,8 @@ def main():
             # ========================================================
             riesgo_inminente = False
             min_dist_frontal = float('inf')
-            for i in list(range(0, 21)) + list(range(339, 360)):
+            # Reducir el cono de detección frontal para que pasillos estrechos no disparen la evasión
+            for i in list(range(0, 12)) + list(range(348, 360)):
                 if lidar_scan[i] < min_dist_frontal:
                     min_dist_frontal = lidar_scan[i]
             
@@ -588,6 +614,11 @@ def main():
                 tiempo_estado += dt
                 
                 esp_escape, ang_escape, intentos, dists, marg = buscar_camino_libre(lidar_points, robot.radius, 'front', 0.02)
+                
+                # Si falla con 0.02, intentar con 0.0 para pasillos súper estrechos
+                if not esp_escape:
+                    esp_escape, ang_escape, intentos, dists, marg = buscar_camino_libre(lidar_points, robot.radius, 'front', 0.0)
+                    
                 intentos_render = intentos
                 render_distancias = dists
                 render_margen = marg

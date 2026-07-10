@@ -1,0 +1,17 @@
+#!/usr/bin/expect -f
+spawn git push -u origin last_attempt
+expect {
+    "Enter passphrase for key" {
+        send "30282220zZ*\r"
+        exp_continue
+    }
+    "Username for 'https://github.com':" {
+        send "CdeCasurpie\r"
+        exp_continue
+    }
+    "Password for" {
+        send "30282220zZ*\r"
+        exp_continue
+    }
+    eof
+}
