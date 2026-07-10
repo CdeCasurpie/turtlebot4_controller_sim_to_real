@@ -43,11 +43,11 @@ class QRScannerThread(threading.Thread):
             return
 
         try:
-            self.detector = cv2.QRCodeDetector()
-            print("[QR Thread] Motor QRCodeDetector clásico inicializado (Versión Liviana).")
+            self.detector = cv2.wechat_qrcode_WeChatQRCode()
+            print("[QR Thread] Motor WeChatQRCode avanzado inicializado (Súper rápido y robusto).")
         except Exception as e:
-            print(f"[QR Thread] Error al inicializar QRCodeDetector: {e}")
-            self.detector = None
+            print(f"[QR Thread] Error al inicializar WeChatQRCode (cayendo a clásico): {e}")
+            self.detector = cv2.QRCodeDetector()
 
     def run(self):
         if dai is None or self.detector is None:
@@ -58,7 +58,7 @@ class QRScannerThread(threading.Thread):
         cam_rgb.setPreviewSize(640, 480)
         cam_rgb.setInterleaved(False)
         cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-        cam_rgb.setFps(15)
+        cam_rgb.setFps(30) # Aumentar FPS a 30
 
         xout_rgb = pipeline.create(dai.node.XLinkOut)
         xout_rgb.setStreamName("rgb")
@@ -78,7 +78,15 @@ class QRScannerThread(threading.Thread):
                         continue
                         
                     frame = in_rgb.getCvFrame()
-                    datos, puntos, _ = self.detector.detectAndDecode(frame)
+                    res = self.detector.detectAndDecode(frame)
+                    if len(res) == 2:
+                        datos, puntos = res
+                    else:
+                        datos, puntos, _ = res
+                    
+                    if isinstance(datos, tuple) or isinstance(datos, list):
+                        datos = datos[0] if len(datos) > 0 else ""
+                        
                     tiempo_actual = time.time()
 
                     if puntos is not None and len(puntos) > 0 and datos and datos != "":
